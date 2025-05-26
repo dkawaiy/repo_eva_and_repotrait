@@ -1,7 +1,7 @@
 from fastapi import FastAPI, BackgroundTasks
 from loguru import logger
 
-from service import eva_with_response, RATask, RAResult, RAStatus, CompReq, CompResult, compare
+from api import eva_with_response, RATask, RAResult, RAStatus, CompReq, CompResult, compare
 
 app = FastAPI()
 

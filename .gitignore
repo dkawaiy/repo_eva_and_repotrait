@@ -1,12 +1,9 @@
 .idea
-test*.py
-test*.sh
 output
 docs
 resource
 venv
-Vanguard-V2-StaticChecker/.idea
-Vanguard-V2-StaticChecker/cmake-build-debug
 __pycache__
-prompt.md
 logs
+test*.py
+test*.sh

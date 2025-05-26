@@ -20,4 +20,4 @@ for /f %%i in ('docker create test_%library%:%version%') do set container_id=%%i
 docker cp %container_id%:/root/output .
 docker cp %container_id%:/root/resource .
 docker rm %container_id%
-docker image prune -f
+echo Test Image: test_%library%:%version%

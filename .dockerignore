@@ -1,9 +1,10 @@
-venv
-docker
 .idea
 output
 docs
-__pycache__
 resource
+venv
+__pycache__
 logs
-test
+docker
+test*.py
+test*.sh

@@ -50,17 +50,17 @@ Please Note:
 def compare(req: CompReq):
     results = list(map(lambda f: EvaResult.model_validate_json(f), req.results))
     try:
-        # if len(req.names) == 2:
-        #     apis1 = set(map(lambda f: ApiDoc.from_dict(f).name, results[0].functions))
-        #     apis2 = set(map(lambda f: ApiDoc.from_dict(f).name, results[1].functions))
-        #     if len(apis1.intersection(apis2)) / min(len(apis1), len(apis2)) > 0.5:
-        #         logger.info(
-        #             f'[Compare] {req.names[0]} and {req.names[1]} holds many same APIs, speculating they are different versions of the same software')
-        #         # TODO，这块代码写的很简陋，需要重构
-        #         res = compare_releases(req.names, results)
-        #         post(url=req.callback, content=CompResult(requestId=req.requestId, result=res, message='ok',
-        #                                                   status=RAStatus.success.value).model_dump_json())
-        #         return
+        if len(req.names) == 2:
+            apis1 = set(map(lambda f: ApiDoc.from_dict(f).name, results[0].functions))
+            apis2 = set(map(lambda f: ApiDoc.from_dict(f).name, results[1].functions))
+            if len(apis1.intersection(apis2)) / min(len(apis1), len(apis2)) > 0.5:
+                logger.info(
+                    f'[Compare] {req.names[0]} and {req.names[1]} holds many same APIs, speculating they are different versions of the same software')
+                # TODO，这块代码写的很简陋，需要重构
+                res = compare_releases(req.names, results)
+                post(url=req.callback, content=CompResult(requestId=req.requestId, result=res, message='ok',
+                                                          status=RAStatus.success.value).model_dump_json())
+                return
         s = ''
         for i, name in enumerate(req.names):
             s += f'## {name}\n'

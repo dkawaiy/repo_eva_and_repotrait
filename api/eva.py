@@ -26,7 +26,7 @@ def eva(ctx: EvaContext, lang: LangEnum):
     # 生成类文档
     ClazzMetric().eva(ctx)
     # 生成模块文档，若API数量过多，则使用V2版本
-    if len(ctx.api_iter()) > 1500:
+    if len(ctx.api_iter()) > 1000:
         ModuleV2Metric().eva(ctx)
     else:
         ModuleMetric().eva(ctx)
@@ -71,10 +71,18 @@ def eva_with_response(req: RATask):
 # 下载仓库
 def download_archive(repo: str) -> str:
     save_path = uuid.uuid4().hex
-    response = requests.get(repo)
-    if response.status_code == 403:
-        raise Exception(response.text)
-    logger.info(f'fetch repo {response.status_code} {len(response.content)}')
-    archive = resolve_archive(response.content)
+    if repo.startswith('file://'):
+        repo = repo[7:]
+        if os.path.exists(repo) and os.path.isfile(repo):
+            with open(repo, 'rb') as f:
+                logger.info(f'fetch repo from local file {repo} {os.path.getsize(repo)}')
+                content = f.read()
+    else:
+        response = requests.get(repo)
+        if response.status_code == 403:
+            raise Exception(response.text)
+        logger.info(f'fetch repo {response.status_code} {len(response.content)}')
+        content = response.content
+    archive = resolve_archive(content)
     archive.decompress(os.path.join('resource', save_path))
     return save_path

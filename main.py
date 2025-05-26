@@ -4,7 +4,7 @@ import shutil
 import click
 
 from metrics import EvaContext
-from service import eva
+from api import eva
 from utils import LangEnum
 
 
