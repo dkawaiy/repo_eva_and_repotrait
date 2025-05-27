@@ -31,11 +31,6 @@ def generateFunctionSignature(m: Method): String = {
 @main def exec(path: String, output: String) = {
     importCode(path)
 
-    val methodsSet = cpg.method
-      .filter(isValidMethod)
-      .map(_.fullName)
-      .toSet
-
     // get methods with callers
     val methods = cpg.method
       .filter(isValidMethod)

@@ -59,11 +59,9 @@ class CParser(Metric):
     def _load_clazz_callgraph(cls, ctx: EvaContext):
         clazz_callgraph = nx.DiGraph()
         with open(pjoin(ctx.output_path, 'structs.jsonl'), 'r') as f:
-            nameSets = set()
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']
-                nameSets.add(name)
                 signature = content['fullname']
                 filename = content['filename']
                 fields = list(
@@ -90,8 +88,9 @@ class CParser(Metric):
                 node: ClazzDef = clazz_callgraph.nodes[node]['attr']
                 for f in node.fields:
                     # 如果属性的类型是其他类，则添加边
-                    if cls._trim_type(f.signature) in nameSets and f.signature in clazz_callgraph.nodes:
-                        clazz_callgraph.add_edge(node.signature, f.signature)
+                    t = cls._trim_type(f.signature)
+                    if t in clazz_callgraph.nodes:
+                        clazz_callgraph.add_edge(node.signature, t)
         ctx.clazz_callgraph = remove_cycle(clazz_callgraph)
 
     @classmethod
