@@ -29,11 +29,11 @@ You'd better consider the following workflow:
 5. Generate Documentation. Write a summary for each module using the provided format you finally decide and put them together. Don't include any other content in the output. 
 
 Please Note:
-- #### Functions is a list of function signatures included in this module. Please use the complete function signature with the return type and parameters, like {api_example}, not the abbreviation.
+- #### Functions is a list of function included in this module. The ordinal number is the ID of the function. Please use the ordinal number to refer to the function like 2, 4, 7, ..., not the function signature.
 - Try to put every function into at least one module unless the function is really useless.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format
 
-Now a list of function descriptions are provided as follows, you can start working.
+Now a list of function descriptions are numbered and provided as follows, you can start working.
 {api_docs}
 '''
 
@@ -64,7 +64,7 @@ You'd better consider the following workflow:
 
 Please Note:
 - If all functions are related to the module tightly, you don't need to remove any functions.
-- #### Functions is a list of function signatures included in this module. Please use the complete function signature with the return type and parameters, like {api_example}, not the abbreviation.
+- #### Functions is a list of function included in this module. The ordinal number is the ID of the function. Please use the ordinal number to refer to the function like 2, 4, 7, ..., not the function signature. Only keep the relevant functions' ordinal numbers.
 - You can revise the content in #### Description if it's not consistent with the answers to the questions.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. 
 - Don't write new Level 3 or Level 4 headings. Don't write anything outside the format. 
@@ -79,6 +79,23 @@ Here is the documentation of the functions referenced in the module:
 
 {functions_doc}
 '''
+
+
+def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
+    functions = m.functions
+    m.functions = []
+    # 将函数编号还原为函数签名
+    for f in functions:
+        i = f.find('.')
+        if i > 0:
+            f = int(f[:i].strip('. '))
+        else:
+            f = int(f.strip('. '))
+        if f <= 0 or f > len(apis):
+            logger.warning(f'[ModuleMetric] llm provide api out of range, {f}')
+            continue
+        m.functions.append(apis[f - 1])
+    return m
 
 
 # 为模块生成文档
@@ -99,18 +116,15 @@ class ModuleMetric(Metric):
         # 如果没有API，报错
         assert len(apis) > 0, 'no api found'
         # 使用函数描述组织上下文
-        api_docs = ''.join(map(lambda a: f'- {a}\n > {ctx.load_function_doc(a).description}\n\n', apis))
-        prompt = modules_summarize_prompt.format(api_docs=api_docs, api_example=apis[0])
+        # 对函数编号，要求LLM输出函数编号，而非函数签名。LLM可能会修正函数签名，导致函数签名不一致，无法识别
+        api_docs = ''.join(map(lambda a: f'{a[0]}. {a[1]}\n > {ctx.load_function_doc(a[1]).description}\n\n',
+                               enumerate(apis, start=1)))
+        prompt = modules_summarize_prompt.format(api_docs=api_docs)
         # 生成模块文档
-        # TODO：模块文档格式总不规范，LLMs常篡改函数名称，导致函数无法找到
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
         modules = ModuleDoc.from_doc(res)
-        for m in modules:
-            functions = m.functions
-            # 检查函数是否存在
-            for f in list(filter(lambda x: not ctx.func(x), functions)):
-                logger.warning(f'[ModuleMetric] module {m.name} contains unknown function: {f}')
-            m.functions = list(filter(lambda x: ctx.func(x) is not None, functions))
+        # 将模块API编号还原为函数签名
+        modules = list(map(lambda x: number_to_api(x, apis), modules))
         # 保存模块文档初稿，若模块中只有一个函数，则舍弃
         modules = list(filter(lambda x: len(modules) == 1 or len(x.functions) > 1, modules))
         for m in modules:
@@ -138,19 +152,24 @@ class ModuleMetric(Metric):
             if len(functions_doc) == 0:
                 logger.warning(f'[ModuleMetric] module {m.name} contains no function')
                 return
+            local_apis = m.functions
+            # 对模块函数进行编号
+            m.functions = list(map(lambda x: f'{x[0]}. {x[1]}', enumerate(m.functions, start=1)))
             functions_doc = prefix_with('\n---\n'.join(functions_doc), '> ')
             # 使用原模块文档组织上下文
             module_doc = prefix_with(m.markdown(), '> ')
             prompt2 = modules_enhance_prompt.format(module_doc=module_doc, functions_doc=functions_doc,
-                                                    lang=ctx.lang.markdown,  api_example=m.functions[0])
+                                                    lang=ctx.lang.markdown)
             # 生成模块文档
             res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask()
             doc = ModuleDoc.from_chapter(res)
+            doc = number_to_api(doc, local_apis)
             # 保存模块文档
             ctx.save_module_doc(doc)
             logger.info(f'[ModuleMetric] gen doc for module {i + 1}/{len(drafts)}: {m.name}')
 
-        TaskDispatcher(ProjectSettings.llm_thread_pool).adds(list(map(lambda args: Task(f=gen, args=args), enumerate(drafts)))).run()
+        TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
+            list(map(lambda args: Task(f=gen, args=args), enumerate(drafts)))).run()
 
     def eva(self, ctx):
         try:

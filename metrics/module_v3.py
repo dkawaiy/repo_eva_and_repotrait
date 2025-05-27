@@ -58,7 +58,6 @@ class ModuleV3Metric(ModuleV2Metric):
             for doc in docs:
                 ctx.save_doc(cls.get_v3_draft_filename(ctx), doc)
                 logger.info(f'[ModuleV3Metric] gen draft for module {doc.name}')
-            # 由于GIL锁，多线程下，extend是原子操作，线程安全
 
         TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
             list(map(lambda args: Task(f=gen, args=(args,)), cluster))).run()

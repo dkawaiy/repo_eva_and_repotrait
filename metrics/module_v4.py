@@ -3,10 +3,10 @@ from typing import Dict, List
 
 from loguru import logger
 
-from utils import SimpleLLM, ChatCompletionSettings, TaskDispatcher, Task, ProjectSettings
-from .module import ModuleMetric
+from utils import SimpleLLM, ChatCompletionSettings, TaskDispatcher, Task, ProjectSettings, prefix_with
 from .doc import ModuleDoc
 from .metric import EvaContext, ClazzDef
+from .module import ModuleMetric, number_to_api
 
 file_understand_prompt = '''
 You are a senior software engineer.
@@ -33,7 +33,7 @@ You'd better consider the following workflow:
 2. Select Key APIs. Based on the core functionalities, identify the key APIs that are most relevant to the module's purpose. These should be the APIs that are most frequently used or have the most significant impact on the module's functionality.
 
 Please Note:
-- #### Functions is a list of API signatures included in this file. Please use the complete API signature with the return type and parameters, like {api_example}, not the abbreviation.
+- #### Functions is a list of function included in this module. The ordinal number is the ID of the function. Please use the ordinal number to refer to the function like 2, 4, 7, ..., not the function signature.
 - The Level 4 headings in the format like `#### Description` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format.
 '''
 
@@ -48,7 +48,7 @@ class ModuleV4Metric(ModuleMetric):
             # 由大模型增强模块文档
             self._enhance(ctx, drafts)
         except AssertionError as e:
-            logger.error(f'[ModuleV2Metric] fail to gen doc for module, err: {e}')
+            logger.error(f'[ModuleV4Metric] fail to gen doc for module, err: {e}')
             raise e
 
     @classmethod
@@ -60,32 +60,39 @@ class ModuleV4Metric(ModuleMetric):
         for clazz in ctx.clazz_iter():
             clazz_per_file[ctx.clazz(clazz.signature).filename].append(clazz)
         filenames = set(api_per_file.keys())
-        logger.info(f'[ModuleV3Metric] gen drafts for modules, files count: {len(filenames)}')
+        logger.info(f'[ModuleV4Metric] gen drafts for modules, files count: {len(filenames)}')
         existed_modules = set(map(lambda x: x.name, ctx.load_module_docs()))
 
         # 生成文档
         def gen(filename: str):
             if filename in existed_modules:
-                logger.info(f'[ModuleV3Metric] load {filename}')
+                logger.info(f'[ModuleV4Metric] load {filename}')
+                return
+            local_apis = api_per_file[filename]
+            if len(local_apis) <= 1:
+                logger.info('f[ModuleV4Metric] skip {filename}, api <= 1')
                 return
             api_docs = ''.join(
-                map(lambda api: f'- {api}\n > {ctx.load_function_doc(api).description}\n\n',
-                    api_per_file[filename]))
+                map(lambda a: f'{a[0]}. {a[1]}\n > {ctx.load_function_doc(a[1]).description}\n\n',
+                    enumerate(local_apis, start=1)))
             clazz_docs = ''.join(
                 map(lambda clazz: f'- {clazz.signature}\n > {ctx.load_clazz_doc(clazz.signature).description}\n\n',
                     clazz_per_file.get(filename, [])))
 
             prompt = file_understand_prompt.format(
                 filename=filename,
-                api_docs=api_docs,
-                clazz_docs=clazz_docs,
-                api_example=api_per_file[filename][0]
+                api_docs=prefix_with(api_docs, '> '),
+                clazz_docs=prefix_with(clazz_docs, '> ')
             )
             res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
             res = f'### {filename}\n' + res
             doc = ModuleDoc.from_chapter(res)
+            doc = number_to_api(doc, local_apis)
+            if len(doc.functions) <= 1:
+                logger.info(f'[ModuleV4Metric] skip {filename}, api <= 1')
+                return
             ctx.save_doc(cls.get_draft_filename(ctx), doc)
-            logger.info(f'[ModuleV2Metric] gen draft for module {doc.name}')
+            logger.info(f'[ModuleV4Metric] gen draft for module {doc.name}')
 
         TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
             list(map(lambda args: Task(f=gen, args=(args,)), filenames))).run()
