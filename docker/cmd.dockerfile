@@ -17,4 +17,6 @@ COPY . .
 
 RUN python3 utils/settings.py
 
+ENV TRANSFORMERS_OFFLINE=1
+
 ENTRYPOINT ["python3", "main.py"]
