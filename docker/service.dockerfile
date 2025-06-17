@@ -17,6 +17,8 @@ COPY . .
 
 RUN python3 utils/settings.py
 
+ENV TRANSFORMERS_OFFLINE=1
+
 EXPOSE 31000
 
 CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "31000"]
