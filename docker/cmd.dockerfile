@@ -15,4 +15,6 @@ ENV HF_ENDPOINT=https://hf-mirror.com
 
 COPY . .
 
+RUN python3 utils/settings.py
+
 ENTRYPOINT ["python3", "main.py"]
