@@ -94,7 +94,7 @@ docker pull applerodite/repohcl-cmd
 docker build -f docker/cmd.dockerfile -t applerodite/repohcl-cmd .
 
 # （可选）获得测试目录下的软件源代码
-test/run.sh test/cpp/md5
+test/run.sh test/cpp/md5.dockerfile
 
 # 分析本地的项目源代码（默认C/C++语言，--lang参数可选：cpp、js），需配置OPENAI_API_KEY环境变量，生成文档至docs目录，
 docker run --rm -v $(pwd)/resource/md5:/app -v $(pwd)/docs:/root/docs -e OPENAI_API_KEY=xxx applerodite/repohcl-cmd /app --lang cpp
@@ -103,16 +103,16 @@ docker run --rm -v $(pwd)/resource/md5:/app -v $(pwd)/docs:/root/docs -e OPENAI_
 #### 服务端运行
 
 ```bash
-docker pull applerodite/repohcl-service
+docker pull applerodite/repohcl
 # 或手工构建服务端镜像
-docker build -f docker/service.dockerfile -t applerodite/repohcl-service .
+docker build -f docker/service.dockerfile -t applerodite/repohcl .
 
 # （可选）获得测试目录下的软件源代码
-test/run.sh test/cpp/md5
+test/run.sh test/cpp/md5.dockerfile
 zip -r resource/md5.zip resource/md5
 
 # 启动服务端，需配置OPENAI_API_KEY环境变量
-docker run -p 31000:31000 -d -v $(pwd)/resource/md5.zip:/app.zip -e OPENAI_API_KEY=xxx applerodite/repohcl-service
+docker run -p 31000:31000 -d -v $(pwd)/resource/md5.zip:/app.zip -e OPENAI_API_KEY=xxx applerodite/repohcl
 
 # 测试服务端
 curl -X POST http://127.0.0.1:31000/tools/hcl \
