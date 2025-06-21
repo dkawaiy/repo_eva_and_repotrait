@@ -44,6 +44,6 @@ class RagSettings:
 
 
 logger.add('logs/application.log', level=ProjectSettings.log_level, rotation='1 day', retention='7 days',
-           encoding='utf-8')
+           encoding='utf-8', filter=lambda record: not record['message'].startswith(('[SimpleLLM]', '[ToolsLLM]')))
 logger.add('logs/llm.log', level=LogLevel.DEBUG, rotation='1 day', retention='3 days',
            encoding='utf-8', filter=lambda record: record['message'].startswith(('[SimpleLLM]', '[ToolsLLM]')))

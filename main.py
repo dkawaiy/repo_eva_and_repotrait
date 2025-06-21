@@ -42,7 +42,8 @@ def main(path, lang):
     path = click.format_filename(path).rstrip(os.sep)
     basename = os.path.basename(path)
     # 移动到工作路径
-    shutil.copytree(path, os.path.join('resource', basename), dirs_exist_ok=True)
+    if path != os.path.join('resource', basename):
+        shutil.copytree(path, os.path.join('resource', basename), dirs_exist_ok=True)
     # 初始化上下文
     ctx = EvaContext(repo=basename, lang=LangEnum.from_cli(lang),
                      doc_path=os.path.join('docs', basename), resource_path=os.path.join('resource', basename),

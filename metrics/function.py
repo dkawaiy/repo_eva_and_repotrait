@@ -26,10 +26,11 @@ class FunctionMetric(Metric):
                 logger.info(f'[FunctionMetric] load {signature}')
                 return
             f: FuncDef = ctx.func(signature)
+            # TODO: 上下文超长，需要更好的解决方案，而非简单地截断
             referencer = list(
                 filter(lambda s: s is not None,
                        map(lambda s: ctx.load_function_doc(s), callgraph.successors(signature)))
-            )
+            )[: 10]
             referenced = list(
                 filter(lambda s: s is not None,
                        map(lambda s: ctx.load_function_doc(s), callgraph.predecessors(signature)))

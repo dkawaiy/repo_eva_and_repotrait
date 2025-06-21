@@ -29,7 +29,8 @@ def generateFunctionSignature(m: Method): String = {
 
 // Note: don't write Chinese comments
 @main def exec(path: String, output: String) = {
-    importCode(path)
+    importCode.c(path)
+
 
     // get methods with callers
     val methods = cpg.method

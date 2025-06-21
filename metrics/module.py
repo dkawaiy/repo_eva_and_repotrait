@@ -4,6 +4,7 @@ from typing import List
 from loguru import logger
 
 from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task
+from . import ApiDoc
 from .doc import ModuleDoc
 from .metric import Metric
 
@@ -81,6 +82,15 @@ Here is the documentation of the functions referenced in the module:
 '''
 
 
+def get_simpler_api_markdown(d: ApiDoc):
+    md = f'### {d.name}\n#### Description\n{d.description}'
+    if d.parameters is not None:
+        md += f'#### Parameters\n{d.parameters}\n\n'
+    if d.detail is not None:
+        md += f'#### Code Details\n{d.detail}\n\n'
+    return md.strip()
+
+
 def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
     functions = m.functions
     m.functions = []
@@ -141,14 +151,14 @@ class ModuleMetric(Metric):
 
         # 优化模块文档
         def gen(i: int, m: ModuleDoc):
-            # 使用完整函数文档组织上下文
+            # 使用简化的函数文档组织上下文
             functions_doc = []
             for f in m.functions:
                 doc = ctx.load_function_doc(f)
                 if doc is None:
                     logger.warning(f'[ModuleMetric] function {f} not found')
                     continue
-                functions_doc.append(doc.markdown())
+                functions_doc.append(get_simpler_api_markdown(doc))
             if len(functions_doc) == 0:
                 logger.warning(f'[ModuleMetric] module {m.name} contains no function')
                 return
