@@ -2,6 +2,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 from os.path import join as pjoin
 from typing import Set, List
 
@@ -19,8 +20,14 @@ class CParser(Metric):
     def eva(self, ctx: EvaContext):
         # joern 解析软件
         if not os.path.exists(pjoin(ctx.output_path, 'methods.jsonl')):
-            subprocess.run(['joern', '--script', pjoin('metrics', 'parse.sc'), '--param', f'output={ctx.output_path}',
-                            '--param', f'path={ctx.resource_path}'])
+            if sys.platform.startswith("win"):
+                subprocess.run(
+                    f'joern.bat --script {pjoin('metrics', 'parse.sc')} --param """output={ctx.output_path}""" --param """path={ctx.resource_path}"""',
+                    shell=True
+                )#
+            else:                           
+                subprocess.run(['joern', '--script', pjoin('metrics', 'parse.sc'), '--param', f'output={ctx.output_path}',
+                                '--param', f'path={ctx.resource_path}'])
         # 读取函数调用图
         self._load_callgraph(ctx)
         logger.info(
@@ -31,11 +38,24 @@ class CParser(Metric):
             f'[CParser] clazz callgraph size: {len(ctx.clazz_callgraph.nodes)}, {len(ctx.clazz_callgraph.edges)}')
 
     @classmethod
+    def file_encoding(cls,path):
+        encodings = ['utf-8', 'gbk', 'utf-16', 'ISO-8859-1']
+        for enc in encodings:
+            try:
+                with open(path, encoding=enc) as f:
+                    content = f.read()
+                return enc
+            except UnicodeDecodeError:
+                continue
+        raise UnicodeDecodeError("无法识别编码")
+    
+    @classmethod
     def _load_callgraph(cls, ctx: EvaContext):
         visible_sets = cls._get_visible_functions(ctx)
         callgraph = nx.DiGraph()
 
-        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:
+        encoding = cls.file_encoding(pjoin(ctx.output_path, 'methods.jsonl'))
+        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r', encoding=encoding) as f:
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']
@@ -45,20 +65,23 @@ class CParser(Metric):
                 access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
                 endLine = content['endLine']
-                with open(pjoin(ctx.resource_path, filename), 'r') as f2:
+                encoding = cls.file_encoding(pjoin(ctx.resource_path, filename))
+                with open(pjoin(ctx.resource_path, filename), 'r',encoding=encoding) as f2:
                     code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
                 params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
                 callgraph.add_node(signature,
-                                   attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
+                                attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
                                                 code=code, visible=visible, access=access))
                 for t in content['callees']:
                     callgraph.add_edge(signature, t)
+
         ctx.callgraph = remove_cycle(callgraph)
 
     @classmethod
     def _load_clazz_callgraph(cls, ctx: EvaContext):
         clazz_callgraph = nx.DiGraph()
-        with open(pjoin(ctx.output_path, 'structs.jsonl'), 'r') as f:
+        encoding = cls.file_encoding(pjoin(ctx.output_path, 'structs.jsonl'))
+        with open(pjoin(ctx.output_path, 'structs.jsonl'), 'r',encoding = encoding) as f:
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']

@@ -3,7 +3,7 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Ta
+from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task
 from .doc import ModuleDoc, ApiDoc
 from .metric import Metric
 

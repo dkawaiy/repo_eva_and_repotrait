@@ -1,7 +1,7 @@
 import json
 import os
 import uuid
-
+import sys
 import requests
 from loguru import logger
 
@@ -31,6 +31,8 @@ def eva(ctx: EvaContext, lang: LangEnum):
     else:
         ModuleMetric().eva(ctx)
     # 生成仓库文档
+    if sys.platform.startswith("win"):
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     RepoV2Metric().eva(ctx)
 
 
