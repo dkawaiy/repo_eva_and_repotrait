@@ -73,7 +73,11 @@ class TaskDispatcher:
         for i, g in enumerate(groups):
             futures = {self._pool.submit(task.f, *task.args): task for task in g}
             for future in as_completed(futures):
-                future.result()
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.exception(f"Task {futures[future]} failed with exception!")
+                    raise e
             logger.debug(f'[TaskDispatcher] finished group {i + 1}, size: {len(g)}')
 
 
