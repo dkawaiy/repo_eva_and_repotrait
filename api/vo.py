@@ -20,6 +20,10 @@ class RAStatus(Enum):
     received = 0
     success = 1
     fail = 2
+    function_fail = 3
+    clazz_fail = 4
+    module_fail = 5
+    repo_fail = 6
 
 
 class RAResult(BaseModel):

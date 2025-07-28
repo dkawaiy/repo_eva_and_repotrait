@@ -2,7 +2,7 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, ChatCompletionSettings, prefix_with, TaskDispatcher
+from utils import SimpleLLM, ChatCompletionSettings, prefix_with, TaskDispatcher, reformat_markdown_headers
 from utils.settings import ProjectSettings
 from .doc import ApiDoc, ClazzDoc
 from .function import documentation_guideline
@@ -33,6 +33,7 @@ class ClazzMetric(Metric):
                 functions).referenced(referenced).lang(ctx.lang.markdown).name(signature).build()
             llm = SimpleLLM(ChatCompletionSettings())
             res = llm.add_system_msg(prompt).add_user_msg(documentation_guideline).ask()
+            res = reformat_markdown_headers(res, ['Description','Attributes','Code Details'])
             res = f'### {signature}\n' + res
             doc = ClazzDoc.from_chapter(res)
             ctx.save_clazz_doc(signature, doc)

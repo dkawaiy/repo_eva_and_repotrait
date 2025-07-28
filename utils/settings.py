@@ -30,7 +30,7 @@ class ChatCompletionSettings:
     openai_api_key: str = config('OPENAI_API_KEY')
     # .env文件配置
     openai_base_url: str = config('OPENAI_BASE_URL')
-    request_timeout: int = config('MODEL_TIMEOUT', cast=int, default=30)
+    request_timeout: int = config('MODEL_TIMEOUT', cast=int, default=60)
     model: str = config('MODEL')
     temperature: float = config('MODEL_TEMPERATURE', cast=float, default=0)
     language: str = config('MODEL_LANGUAGE', default='Chinese')
@@ -38,9 +38,10 @@ class ChatCompletionSettings:
 
 
 class RagSettings:
+    use_gpu: bool = config('USE_GPU', default=False, cast=lambda x: bool(x))
     tokenizer: Any = config('TOKENIZER', default='Amu/tao-8k', cast=lambda x: AutoTokenizer.from_pretrained(x))
     model: Any = config('TOKENIZER_MODEL', default='Amu/tao-8k', cast=lambda x: AutoModel.from_pretrained(x))
-    dim: int = config('TOKENIZER_DIM', cast=int, default=1024)
+    dim: int = config('TOKENIZER_DIM', cast=int, default=384)
 
 
 logger.add('logs/application.log', level=ProjectSettings.log_level, rotation='1 day', retention='7 days',

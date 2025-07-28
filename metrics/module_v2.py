@@ -69,6 +69,20 @@ Please Note:
 
 '''
 
+influence_prompt = '''
+你是一个软件架构分析专家。
+你的任务是分析函数描述，猜测该函数所属的模快，给出该函数所属模快名称以及模快中可能包含的功能以及其他函数。
+按照如下的模板生成结果：
+> ### 模块名称
+> #### 功能描述
+> 模块的功能描述，简要概括该模块的目的、如何解决特
+定问题，以及模块中函数之间的协作关系。
+> #### 函数列表
+> - 函数1
+> - 函数2       
+> - 函数3
+函数名称&函数描述：/n
+'''
 
 # 为模块生成文档V2，
 # 本质上是先分解再合并，分解时使用聚类算法，合并时使用大模型。V2的效果并不比V1更好，但减少了上下文量。
@@ -105,7 +119,7 @@ class ModuleV2Metric(ModuleMetric):
         rag = SimpleRAG(RagSettings())
         logger.info('[ModuleV2Metric] clustering...')
         cluster = rag.kmeans(
-            list(map(lambda x: x.name + ': ' + x.description, map(lambda x: ctx.load_function_doc(x), apis))))
+            list(map(lambda x: influence_prompt + x.name + ': ' + x.description, map(lambda x: ctx.load_function_doc(x), apis))))
         logger.info(f'[ModuleV2Metric] cluster to {len(cluster)} groups')
 
         def gen(g: List[int]):

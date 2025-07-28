@@ -3,7 +3,8 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task
+
+from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task,reformat_markdown_with_headers
 from .doc import ModuleDoc, ApiDoc
 from .metric import Metric
 
@@ -97,9 +98,31 @@ def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
     for f in functions:
         i = f.find('.')
         if i > 0:
-            f = int(f[:i].strip('. '))
+            f = f[:i].strip('. ').strip('> ').strip('- ')
+            try:
+                f = int(f)
+            except:
+                continue
         else:
-            f = int(f.strip('. '))
+            f = f.strip('. ')
+            f = f.strip('> ')
+            f = f.strip('- ')
+            if ',' in f:  # 支持多个函数编号
+                lis = f.split(',')
+                cleaned_lis = [x.strip('- ') for x in lis]
+                lis = [int(x) for x in cleaned_lis if x]#这里可能一般不需要跳过了吧
+                #lis = [int(x.strip('- ')) for x in lis]#
+
+                for i in lis:
+                    if i <= 0 or i > len(apis):
+                        logger.warning(f'[ModuleMetric] llm provide api out of range, {i}')
+                        continue
+                    m.functions.append(apis[i - 1])
+                continue
+        try:
+            f = int(f)
+        except:
+            continue    
         if f <= 0 or f > len(apis):
             logger.warning(f'[ModuleMetric] llm provide api out of range, {f}')
             continue
@@ -131,6 +154,7 @@ class ModuleMetric(Metric):
         prompt = modules_summarize_prompt.format(api_docs=api_docs)
         # 生成模块文档
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
+        res = reformat_markdown_with_headers(res, ['Module Name', 'Description', 'Functions'])
         modules = ModuleDoc.from_doc(res)
         # 将模块API编号还原为函数签名
         modules = list(map(lambda x: number_to_api(x, apis), modules))
@@ -171,6 +195,7 @@ class ModuleMetric(Metric):
                                                     lang=ctx.lang.markdown)
             # 生成模块文档
             res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask()
+            res = reformat_markdown_with_headers(res, ['Module Name', 'Description', 'Functions', 'Use Case'])
             doc = ModuleDoc.from_chapter(res)
             doc = number_to_api(doc, local_apis)
             # 保存模块文档

@@ -2,7 +2,7 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, ChatCompletionSettings, ProjectSettings, prefix_with, TaskDispatcher
+from utils import SimpleLLM, ChatCompletionSettings, ProjectSettings, prefix_with, TaskDispatcher,reformat_markdown_headers
 from .doc import ApiDoc
 from .metric import Metric, FieldDef, FuncDef
 
@@ -11,6 +11,14 @@ documentation_guideline = (
     "you're provided with code snippet and documents. AVOID ANY SPECULATION and inaccurate descriptions! Now, provide the documentation "
     "for the target object in a professional way."
 )
+
+import re
+
+def count_level4_headers(md_text: str) -> int:
+    """
+    统计markdown文本中四级标题（####）的数量
+    """
+    return len(re.findall(r'^#### ', md_text, flags=re.MULTILINE))
 
 
 # 为函数生成文档
@@ -38,6 +46,12 @@ class FunctionMetric(Metric):
             prompt = _FunctionPromptBuilder().parameters(f.params).code(f.code).referencer(
                 referencer).referenced(referenced).lang(ctx.lang.markdown).name(signature).build()
             res = SimpleLLM(ChatCompletionSettings()).add_system_msg(prompt).add_user_msg(documentation_guideline).ask()
+            
+            count =  count_level4_headers(res)
+            if count == 3:
+                res = reformat_markdown_headers(res, ['Description', 'Code Details', 'Example'])
+            else:
+                res = reformat_markdown_headers(res, ['Description', 'Parameters','Code Details', 'Example'])
             res = f'### {signature}\n' + res
             doc = ApiDoc.from_chapter(res)
             ctx.save_function_doc(signature, doc)
@@ -73,7 +87,7 @@ The standard format is in the Markdown reference paragraph below, and you do not
 > ```
 Please note:
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them.
-- Don't add new Level 3 or Level 4 headings. Do not write anything outside the format.
+- Do not add any new Level 3 or Level 4 headings. Do not write anything outside the format.
 '''
 
 

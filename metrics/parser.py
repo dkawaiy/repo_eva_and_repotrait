@@ -65,15 +65,23 @@ class CParser(Metric):
                 access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
                 endLine = content['endLine']
-                encoding = cls.file_encoding(pjoin(ctx.resource_path, filename))
-                with open(pjoin(ctx.resource_path, filename), 'r',encoding=encoding) as f2:
-                    code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
-                params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
-                callgraph.add_node(signature,
-                                attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
-                                                code=code, visible=visible, access=access))
-                for t in content['callees']:
-                    callgraph.add_edge(signature, t)
+                # 如果文件不存在，跳过
+                if not os.path.exists(pjoin(ctx.resource_path, filename)):
+                    logger.warning(f'[CParser] file {filename} not found, skip')
+                    continue
+        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r', encoding=encoding) as f:    
+            for line_1 in f:
+                content = json.loads(line_1.strip())
+                filename = content['filename']
+                #如果函数文件不存在跳过
+                if not os.path.exists(pjoin(ctx.resource_path, filename)):
+                    logger.warning(f'[CParser] file {filename} not found, skip')
+                    continue
+                for t in content['callees']:#如果callee节点在callgraph中，则添加边
+                    if t in callgraph.nodes:
+                        signature = content['signature']
+                        # 如果函数签名在callgraph中，则添加边
+                        callgraph.add_edge(signature, t)
 
         ctx.callgraph = remove_cycle(callgraph)
 
@@ -91,6 +99,8 @@ class CParser(Metric):
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=cls._get_access(x['modifier'])),
                         content['attributes']))
                 funcs = list(map(lambda n: ctx.func(n), content['methods']))
+                # 如果funcs为空，过滤掉
+                funcs = list(filter(lambda x: x is not None, funcs))
                 code = cls._build_class_code(signature, fields, funcs)
                 # 如果没有相关函数，则尝试为其绑定函数
                 if len(funcs) == 0:
