@@ -69,6 +69,13 @@ class CParser(Metric):
                 if not os.path.exists(pjoin(ctx.resource_path, filename)):
                     logger.warning(f'[CParser] file {filename} not found, skip')
                     continue
+                encoding = cls.file_encoding(pjoin(ctx.resource_path, filename))
+                with open(pjoin(ctx.resource_path, filename), 'r',encoding=encoding) as f2:
+                    code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
+                params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
+                callgraph.add_node(signature,
+                                attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
+                                                code=code[:min(len(code),5000)], visible=visible, access=access))
         with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r', encoding=encoding) as f:    
             for line_1 in f:
                 content = json.loads(line_1.strip())
