@@ -93,6 +93,11 @@ def reformat_markdown_headers(md_text: str, new_headers: List[str]) -> str:
     # 匹配所有四级标题的位置
     header_pattern = re.compile(r'(#### )(.+?)(?=\n)')
     headers = list(header_pattern.finditer(md_text))
+    header_texts = [h.group(2) for h in headers]
+    flag = all(h in header_texts for h in new_headers)
+    if flag:
+        return md_text
+
     if len(headers) != len(new_headers):
         return embedding_replace_headers(md_text, new_headers)
     # 逐个替换
@@ -142,36 +147,54 @@ def reformat_markdown_with_headers(md_text: str, headers: List[str]) -> str:
         result.insert(0, parts[0])
     return ''.join(result)
 
-
-
-def embedding_replace_headers(md_text: str, target_headers: List[str], model_name: str = 'all-MiniLM-L6-v2') -> str:
+def embedding_replace_headers(md_text: str, target_headers: List[str], 
+                            model_name: str = 'all-MiniLM-L6-v2') -> str:
     """
-    用embedding语义相似度将markdown中的四级标题依次替换为target_headers中的标题。
-    :param md_text: 原始markdown文本
-    :param target_headers: 目标四级标题列表
-    :param model_name: embedding模型名
-    :return: 替换后的markdown文本
+    用embedding语义相似度将markdown中的四级标题替换为target_headers中的标题（按标题语义匹配）
     """
     model = SentenceTransformer(model_name)
-    # 找到所有四级标题及其内容区块
+    
+    #  1. 使用 split 分割文本，保留标题（用于后续替换）
     blocks = re.split(r'(#### .+?\n)', md_text)
-    header_indices = [i for i in range(1, len(blocks), 2)]
-    block_texts = [blocks[i+1] if i+1 < len(blocks) else "" for i in header_indices]
-    # 计算每个区块内容的embedding
-    block_embeds = model.encode(block_texts)
-    # 计算每个目标标题的embedding
-    header_embeds = model.encode(target_headers)
-    used = set()
-    for idx, header_embed in enumerate(header_embeds):
-        # 计算与所有区块的相似度
-        sims = np.dot(block_embeds, header_embed) / (np.linalg.norm(block_embeds, axis=1) * np.linalg.norm(header_embed) + 1e-8)
-        # 找到未用过的最相似区块
+    
+    # 提取所有原始标题的文本（去掉 '#### ' 和 '\n'）
+    raw_header_texts = []
+    header_positions = []  # 记录标题在 blocks 中的位置（奇数索引）
+    
+    for i in range(1, len(blocks), 2):
+        # 去掉 '#### ' 和末尾换行
+        title = blocks[i][5:].strip()  # [5:] 去掉 '#### '，strip() 去换行和空格
+        raw_header_texts.append(title)
+        header_positions.append(i)
+    
+    if not raw_header_texts or not target_headers:
+        return md_text
+
+    #  2. 计算原始标题 和 目标标题 的 embedding
+    raw_embeds = model.encode(raw_header_texts)      # (N, 384)
+    target_embeds = model.encode(target_headers)     # (M, 384)
+
+    used = set()  # 记录已匹配的原始标题索引（在 raw_header_texts 中的索引）
+    
+    #  3. 为每个目标标题找最相似的原始标题（未被使用的）
+    for target_idx, target_embed in enumerate(target_embeds):
+        sims = np.dot(raw_embeds, target_embed) / (
+            np.linalg.norm(raw_embeds, axis=1) * np.linalg.norm(target_embed) + 1e-8
+        )
+        
+        best_raw_idx = -1
         for _ in range(len(sims)):
-            best_idx = int(np.argmax(sims))
-            if header_indices[best_idx] not in used:
-                blocks[header_indices[best_idx]] = f'#### {target_headers[idx]}\n'
-                used.add(header_indices[best_idx])
+            candidate = int(np.argmax(sims))
+            if candidate not in used:
+                best_raw_idx = candidate
                 break
-            else:
-                sims[best_idx] = -1  # 已用过则跳过
+            sims[candidate] = -1  # 排除已使用
+        
+        if best_raw_idx != -1:
+            # 找到匹配：更新 blocks 中对应位置的标题
+            block_index = header_positions[best_raw_idx]  # 在 blocks 中的位置
+            blocks[block_index] = f'#### {target_headers[target_idx]}\n'
+            used.add(best_raw_idx)
+
     return ''.join(blocks)
+

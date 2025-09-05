@@ -4,7 +4,7 @@ from typing import List
 from loguru import logger
 
 
-from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task,reformat_markdown_with_headers
+from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task,reformat_markdown_headers
 from .doc import ModuleDoc, ApiDoc
 from .metric import Metric
 
@@ -110,7 +110,13 @@ def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
             if ',' in f:  # 支持多个函数编号
                 lis = f.split(',')
                 cleaned_lis = [x.strip('- ') for x in lis]
-                lis = [int(x) for x in cleaned_lis if x]#这里可能一般不需要跳过了吧
+                newlis = []
+                for i in cleaned_lis:
+                    try:
+                        newlis.append(int(i))
+                    except:
+                        continue
+                lis = [int(x) for x in newlis if x]#这里可能一般不需要跳过了吧
                 #lis = [int(x.strip('- ')) for x in lis]#
 
                 for i in lis:
@@ -154,7 +160,7 @@ class ModuleMetric(Metric):
         prompt = modules_summarize_prompt.format(api_docs=api_docs)
         # 生成模块文档
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
-        res = reformat_markdown_with_headers(res, ['Module Name', 'Description', 'Functions'])
+        res = reformat_markdown_headers(res, ['Description', 'Functions'])
         modules = ModuleDoc.from_doc(res)
         # 将模块API编号还原为函数签名
         modules = list(map(lambda x: number_to_api(x, apis), modules))
@@ -189,13 +195,14 @@ class ModuleMetric(Metric):
             # 对模块函数进行编号
             m.functions = list(map(lambda x: f'{x[0]}. {x[1]}', enumerate(m.functions, start=1)))
             functions_doc = prefix_with('\n---\n'.join(functions_doc), '> ')
+            functions_doc = functions_doc[:min(100000,len(functions_doc)-5)]
             # 使用原模块文档组织上下文
             module_doc = prefix_with(m.markdown(), '> ')
             prompt2 = modules_enhance_prompt.format(module_doc=module_doc, functions_doc=functions_doc,
                                                     lang=ctx.lang.markdown)
             # 生成模块文档
             res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask()
-            res = reformat_markdown_with_headers(res, ['Module Name', 'Description', 'Functions', 'Use Case'])
+            res = reformat_markdown_headers(res, [ 'Description', 'Functions', 'Use Case'])
             doc = ModuleDoc.from_chapter(res)
             doc = number_to_api(doc, local_apis)
             # 保存模块文档

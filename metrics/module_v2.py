@@ -4,7 +4,7 @@ from typing import List
 from loguru import logger
 
 from utils import SimpleLLM, prefix_with, ChatCompletionSettings, SimpleRAG, RagSettings, TaskDispatcher, Task, \
-    ProjectSettings
+    ProjectSettings,reformat_markdown_headers
 from .doc import ModuleDoc
 from .metric import EvaContext
 from .module import ModuleMetric, number_to_api
@@ -128,9 +128,14 @@ class ModuleV2Metric(ModuleMetric):
             api_docs = ''.join(
                 map(lambda a: f'{a[0]}. {a[1]}\n > {ctx.load_function_doc(a[1]).description}\n\n',
                     enumerate(local_apis, start=1)))
+            api_docs = api_docs[:min(100000,len(api_docs)-5)]
             prompt2 = modules_prompt.format(api_doc=prefix_with(api_docs, '> '))
             # 生成模块文档
             res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask(lambda x: x.replace('---', '').strip())
+            try:
+                docs = ModuleDoc.from_doc(res)
+            except:
+                res = reformat_markdown_headers(res, ['Description', 'Functions'])
             docs = ModuleDoc.from_doc(res)
             # 保存模块文档
             for doc in docs:
@@ -161,6 +166,7 @@ class ModuleV2Metric(ModuleMetric):
         prompt = modules_merge_prompt.format(
             module_doc=prefix_with('\n'.join(map(lambda x: x.markdown(), drafts)), '>'))
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask(lambda x: x.replace('---', '').strip())
+        res = reformat_markdown_headers(res, ['Description', 'Functions'])
         docs = ModuleDoc.from_doc(res)
         docs = list(map(lambda x: number_to_api(x, apis), docs))
         # 保存模块文档初稿，若模块中只有一个函数，则舍弃

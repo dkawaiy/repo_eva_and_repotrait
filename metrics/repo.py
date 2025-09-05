@@ -162,6 +162,7 @@ class RepoMetric(Metric):
         assert len(modules) > 0, 'no module found'
         logger.info(f'[RepoMetric] gen doc for repo, modules count: {len(modules)}')
         modules_doc = '\n\n---\n\n'.join(map(lambda m: m.markdown(), modules))
+        modules_doc = modules_doc[:min(100000,len(modules_doc)-5)]
         prompt = repo_summarize_prompt.format(modules_doc=prefix_with(modules_doc, '> '), lang=ctx.lang.markdown)
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
         res = reformat_markdown_with_headers(res, ['README', 'Description', 'Features', 'Standards'])

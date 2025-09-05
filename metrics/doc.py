@@ -149,6 +149,10 @@ class ModuleDoc(Doc):
     def from_chapter_hook(cls, doc: ModuleDoc, block: str) -> ModuleDoc:
         function_doc = cls.from_block(block, 'Functions')
         doc.functions = list(filter(lambda x: len(x), map(lambda x: x.strip('- `\''), function_doc.splitlines())))
+        # try:
+        #     doc.functions = list(filter(lambda x: len(x), map(lambda x: x.strip('- `\''), function_doc.splitlines())))
+        # except:
+        #     print(1)
         doc.example = cls.from_block(block, 'Use Case')
         return doc
 
