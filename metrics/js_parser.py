@@ -132,7 +132,7 @@ class JSlangParser(Metric):
                 )#
                 print('flag',1)
             else:                           
-                subprocess.run(['joern', '--script', pjoin('metrics', 'js_parse.sc'), '--param', f'output={ctx.output_path}',
+                subprocess.run(['joern', '--script', pjoin('metrics', 'js_query.sc'), '--param', f'output={ctx.output_path}',
                                 '--param', f'path={ctx.resource_path}'])
         # 读取函数调用图
         self._load_callgraph(ctx)

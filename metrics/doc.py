@@ -41,10 +41,19 @@ class Doc(ABC, BaseModel):
 
     # 读取字符串block，返回 header（#### 四级标题）下的内容
     @classmethod
-    def from_block(cls, block: str, header: str) -> Optional[str]:
-        match = re.search(f'#### {header}' + r'(.*?)(?=####|\Z)', block, re.DOTALL)
-        content = match.group(1).strip() if match else None
-        return content
+    def from_block(cls, block: str, header: str) -> str:
+        try:
+            match = re.search(f'#### {header}' + r'(.*?)(?=####|\Z)', block, re.DOTALL)
+            if match:
+                content = match.group(1).strip()
+                if content:
+                    return content
+                else:
+                    return f'[内容为空: {header}]'
+            else:
+                return f'[未找到: {header}]'
+        except Exception as e:
+            return f'[解析异常: {header}]'
 
     # 将文档对象转化为markdown格式的字符串
     def markdown(self) -> str:
