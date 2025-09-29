@@ -39,8 +39,8 @@ class ChatCompletionSettings:
 
 class RagSettings:
     use_gpu: bool = config('USE_GPU', default=False, cast=lambda x: bool(x))
-    tokenizer: Any = config('TOKENIZER', default='Amu/tao-8k', cast=lambda x: AutoTokenizer.from_pretrained(x))
-    model: Any = config('TOKENIZER_MODEL', default='Amu/tao-8k', cast=lambda x: AutoModel.from_pretrained(x))
+    #tokenizer: Any = config('TOKENIZER', default='Amu/tao-8k', cast=lambda x: AutoTokenizer.from_pretrained(x))
+    #model: Any = config('TOKENIZER_MODEL', default='Amu/tao-8k', cast=lambda x: AutoModel.from_pretrained(x))
     dim: int = config('TOKENIZER_DIM', cast=int, default=384)
 
 

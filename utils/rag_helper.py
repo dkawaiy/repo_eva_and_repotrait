@@ -20,9 +20,9 @@ class SimpleRAG:
         self._index = faiss.IndexFlatL2(setting.dim)
         self._dim = setting.dim
         self._embeddings = []
-        self._tokenizer = setting.tokenizer
-        self._model = setting.model
-        self._model.eval()
+        #self._tokenizer = setting.tokenizer
+        #self._model = setting.model
+        #self._model.eval()
         self._use_gpu = setting.use_gpu
         self.device = None
 
