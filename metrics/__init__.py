@@ -12,8 +12,9 @@ from .parser import CParser
 from .repo import RepoMetric
 from .repo_v2 import RepoV2Metric
 from .structure import StructureMetric
+from .arkts_parse import arktsParser
 
 __all__ = ['Metric', 'FuncDef', 'FieldDef', 'EvaContext', 'ClazzDef', 'CParser', 'JSlangParser',
            'Doc', 'ApiDoc', 'ClazzDoc', 'ModuleDoc', 'StructureMetric', 'FunctionMetric', 'FunctionV2Metric',
            'ClazzMetric', 'ModuleMetric', 'ModuleV2Metric', 'ModuleV3Metric', 'ModuleV4Metric', 'RepoMetric',
-           'RepoV2Metric', 'RepoDoc']
+           'RepoV2Metric', 'RepoDoc','arktsParser']

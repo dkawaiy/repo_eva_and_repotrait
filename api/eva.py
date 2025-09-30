@@ -6,7 +6,7 @@ import requests
 from loguru import logger
 
 from metrics import EvaContext, CParser, FunctionMetric, ClazzMetric, ModuleMetric, RepoV2Metric, JSlangParser, \
-    ModuleV2Metric
+    ModuleV2Metric,arktsParser
 from utils import LangEnum, post, resolve_archive
 from .vo import EvaResult, RAResult, RAStatus, RATask
 
@@ -17,6 +17,8 @@ def eva(ctx: EvaContext, lang: LangEnum):
         CParser().eva(ctx)
     elif lang == LangEnum.javascript:
         JSlangParser().eva(ctx)
+    elif lang == LangEnum.arkts:
+        arktsParser().eva(ctx)
     else:
         raise NotImplementedError(f'{lang} not supported')
     # 生成软件目录结构，TODO：暂时不用了

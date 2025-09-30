@@ -13,7 +13,7 @@ import re
 from loguru import logger
 import sys
 # @Author: 段庸
-class JSlangParser(Metric):
+class arktsParser(Metric):
 
     @classmethod
     def _load_callgraph(cls, ctx: EvaContext):
@@ -27,18 +27,19 @@ class JSlangParser(Metric):
                 #visible = name in visible_sets and 'STATIC' not in content['modifier']
                 signature = content['signature']
                 filename = content['filename']
-                access = cls._get_access(content['modifier'])
+                #access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
-                endLine = content['endLine']
-                with open(pjoin(ctx.resource_path, filename), 'r') as f2:
-                    code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
+                #endLine = content['endLine']
+                code = content['code']
                 params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
                 callgraph.add_node(signature,
                                    attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
-                                                code=code, visible=True, access=access))
-        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:
+                                                code=code, visible=True, access=True))
+        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:        
             for line in f:
-                content = json.loads(line.strip())        
+                content = json.loads(line.strip())
+                if content['outermethod'] is None and content['outermethods'] in callgraph:
+                    callgraph.add_edge(content['outermethod'], signature)
                 for t in content['callees']:
                     if signature in callgraph and t in callgraph:
                         callgraph.add_edge(signature, t)
@@ -47,22 +48,22 @@ class JSlangParser(Metric):
     @classmethod
     def _load_clazz_callgraph(cls, ctx: EvaContext):
         clazz_callgraph = nx.DiGraph()
-        inherit_pairs = []
+        #inherit_pairs = []
         sigs = []
-        with open(pjoin(ctx.output_path, 'typedefs.jsonl'), 'r') as f:
+        with open(pjoin(ctx.output_path, 'classes.jsonl'), 'r') as f:
             nameSets = set()
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']
                 nameSets.add(name)
                 signature = content['fullname']
-                inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
+                #inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
                 sigs.append(signature)
                 filename = content['filename']
                 fields = list(
-                    map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=cls._get_access(x['modifier'])),
+                    map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=x['access']),
                         content['attributes']))
-                funcs = list(map(lambda n: ctx.func(n), content['methods']))
+                funcs = list(map(lambda n: ctx.func(n["signature"]), content['methods']))
                 code = cls._build_class_code(signature, fields, funcs)
                 # 如果没有相关函数，则尝试为其绑定函数
                 if len(funcs) == 0:
@@ -83,12 +84,13 @@ class JSlangParser(Metric):
                 node: ClazzDef = clazz_callgraph.nodes[node]['attr']
                 for f in node.fields:
                     # 如果属性的类型是其他类，则添加边
-                    if cls._trim_type(f.signature) in nameSets and f.signature in clazz_callgraph.nodes:
+                    if cls._trim_type(f.signature) in sigs and f.signature in clazz_callgraph.nodes:
                         clazz_callgraph.add_edge(node.signature, f.signature)
+            '''
             for pair in inherit_pairs:
                 for sig in pair[1]:
                     if sig in sigs:
-                        clazz_callgraph.add_edge(pair[0],sig)
+                        clazz_callgraph.add_edge(pair[0],sig)'''
 
         ctx.clazz_callgraph = remove_cycle(clazz_callgraph)
 
@@ -126,17 +128,24 @@ class JSlangParser(Metric):
     
 
     def eva(self, ctx: EvaContext):
-        # joern 解析软件
+        # 解析软件
         if not os.path.exists(pjoin(ctx.output_path, 'methods.jsonl')):
             if sys.platform.startswith("win"):
                 subprocess.run(
-                    f'joern.bat --script {pjoin('metrics', 'js_query.sc')} --param """output={ctx.output_path}""" --param """path={ctx.resource_path}"""',
+                    f'npx ts-node /arkanalyzer/arkts_test.ts "{ctx.resource_path}" "{ctx.output_path}"',
                     shell=True
-                )#
-                print('flag',1)
-            else:                           
-                subprocess.run(['joern', '--script', pjoin('metrics', 'js_query.sc'), '--param', f'output={ctx.output_path}',
-                                '--param', f'path={ctx.resource_path}'])
+                )#在windows运行这个地方要改成对应的目录
+            else:
+                print(ctx.resource_path,ctx.output_path)
+                src = "/root/metrics/arkts_test.ts"
+                dst = "/arkanalyzer/arkts_test.ts"
+                # 每次运行前覆盖
+                shutil.copyfile(src, dst)
+                subprocess.run([
+                    'npx', 'ts-node', '/arkanalyzer/arkts_test.ts',
+                    pjoin('/root',ctx.resource_path),
+                    pjoin('/root',ctx.output_path)
+                ], cwd='/arkanalyzer')
         # 读取函数调用图
         self._load_callgraph(ctx)
         logger.info(
@@ -145,7 +154,4 @@ class JSlangParser(Metric):
         self._load_clazz_callgraph(ctx)
         logger.info(
             f'[CParser] clazz callgraph size: {len(ctx.clazz_callgraph.nodes)}, {len(ctx.clazz_callgraph.edges)}')
-    
-
-
 

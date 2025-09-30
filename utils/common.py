@@ -36,6 +36,8 @@ class LangEnum(_Lang, Enum):
     # rust = 'Rust', 'rust', 'rs'
     javascript = 'JavaScript', 'javascript', 'js'
 
+    arkts = 'arkts','ArkTs',"Arkts"
+
     # java = 'Java', 'java', 'java'
     # python = 'Python', 'python', 'py'
 

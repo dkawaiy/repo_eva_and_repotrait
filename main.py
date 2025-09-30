@@ -36,7 +36,7 @@ from utils import LangEnum
 @click.command()
 @click.argument('path', type=click.Path(exists=True))
 @click.option('--lang', default=LangEnum.cpp.cli,
-              type=click.Choice([LangEnum.cpp.cli, LangEnum.javascript.cli], case_sensitive=False),
+              type=click.Choice([LangEnum.cpp.cli, LangEnum.javascript.cli, LangEnum.arkts.cli], case_sensitive=False),
               help='编程语言')
 def main(path, lang):
     path = click.format_filename(path).rstrip(os.sep)
