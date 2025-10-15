@@ -57,7 +57,6 @@ class JSlangParser(Metric):
                 nameSets.add(name)
                 signature = content['fullname']
                 inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
-                sigs.append(signature)
                 filename = content['filename']
                 fields = list(
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=cls._get_access(x['modifier'])),
@@ -78,17 +77,18 @@ class JSlangParser(Metric):
                                          attr=ClazzDef(signature=signature, filename=filename, code=code,
                                                        functions=funcs, name=name,
                                                        fields=fields))
-            # 组合关系
-            for node in list(clazz_callgraph.nodes()):
-                node: ClazzDef = clazz_callgraph.nodes[node]['attr']
-                for f in node.fields:
-                    # 如果属性的类型是其他类，则添加边
-                    if cls._trim_type(f.signature) in nameSets and f.signature in clazz_callgraph.nodes:
-                        clazz_callgraph.add_edge(node.signature, f.signature)
-            for pair in inherit_pairs:
-                for sig in pair[1]:
-                    if sig in sigs:
-                        clazz_callgraph.add_edge(pair[0],sig)
+                sigs.append(signature)
+        # 组合关系
+        for node in list(clazz_callgraph.nodes()):
+            node: ClazzDef = clazz_callgraph.nodes[node]['attr']
+            for f in node.fields:
+                # 如果属性的类型是其他类，则添加边
+                if cls._trim_type(f.signature) in nameSets and f.signature in clazz_callgraph.nodes:
+                    clazz_callgraph.add_edge(node.signature, f.signature)
+        for pair in inherit_pairs:
+            for sig in pair[1]:
+                if sig in sigs and pair[0] in sigs:
+                    clazz_callgraph.add_edge(pair[0],sig)
 
         ctx.clazz_callgraph = remove_cycle(clazz_callgraph)
 

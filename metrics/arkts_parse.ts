@@ -136,6 +136,7 @@ async function main() {
             //endLine: method.getEndLine(),
             filename: method.getDeclaringArkFile().getName(),
             modifiers: method.getModifiers(),
+            access: method.isPublic() ? 'public' : method.isPrivate() ? 'private' : method.isProtected() ? 'protected' : 'default',
             params: params,
             outermethod: outerSignature,
             returnType: getTypeFullName(method.getReturnType()),
@@ -213,7 +214,7 @@ async function main() {
                 beginLine: cls.getLine(),
                 methods,
                 attributes,
-                modifier: cls.getModifiers()
+                modifiers: cls.getModifiers()
             });
         }
     }

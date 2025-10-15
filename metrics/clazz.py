@@ -61,6 +61,7 @@ doc_generation_instruction = (
     "> #### Code Details\n"
     "> Detailed and CERTAIN code analysis of the Class. {has_relationship}\n\n"
     "Please note:\n"
+    "- You do not need to write the reference symbols `>` when you output.\n"
     "- The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them.\n"
     "- Don't add new Level 3 or Level 4 headings. Do not write anything outside the format\n")
 

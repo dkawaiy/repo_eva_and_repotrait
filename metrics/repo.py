@@ -4,7 +4,7 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, prefix_with, ChatCompletionSettings, ToolsLLM, TaskDispatcher, Task, ProjectSettings,reformat_markdown_with_headers
+from utils import SimpleLLM, prefix_with, ChatCompletionSettings, ToolsLLM, TaskDispatcher, Task, ProjectSettings,reformat_markdown_headers
 from . import EvaContext
 from .doc import RepoDoc
 from .metric import Metric
@@ -64,6 +64,7 @@ Please Note:
 - Strictly follow the above format for output. Don't output any information outside the QA list. 
 - Questions should only focus on the functionality of the software, not on performance, documentations, community maintenance, etc. that cannot be obtained from the software source code and documentation.
 - Questions are meant to guide you in improving your software, so don’t get away from the field your software work for.
+- You do not need to write the reference symbols `>` when you output.
 
 '''
 
@@ -130,6 +131,7 @@ Please Note:
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. 
 - You can revise the content in #### Description, #### Features and #### Standards sections if they are not consistent with the answers to the questions.
 - Don't add new Level 3 or Level 4 headings. Do not write anything outside the format. Do not output descriptions of improvements or summary in the end.
+- You do not need to write the reference symbols `>` when you output.
 '''
 
 
@@ -165,7 +167,7 @@ class RepoMetric(Metric):
         modules_doc = modules_doc[:min(100000,len(modules_doc)-5)]
         prompt = repo_summarize_prompt.format(modules_doc=prefix_with(modules_doc, '> '), lang=ctx.lang.markdown)
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
-        res = reformat_markdown_with_headers(res, ['README', 'Description', 'Features', 'Standards'])
+        res = reformat_markdown_headers(res, ['Description', 'Features', 'Standards'])
         doc = RepoDoc.from_chapter(res)
         # 保存仓库文档初稿
         ctx.save_doc(cls.get_draft_filename(ctx), doc)
@@ -255,7 +257,7 @@ class RepoMetric(Metric):
         qa_doc = '\n'.join(map(lambda i: f'- Q{i}: {questions[i]}\n > A{i}: {answers[i]}', range(len(questions))))
         prompt = repo_enhance_prompt.format(repo_doc=prefix_with(draft.markdown(), '> '), qa=prefix_with(qa_doc, '> '), lang=ctx.lang.markdown)
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
-        res = reformat_markdown_with_headers(res, ['README','Description', 'Features', 'Standards', 'Scenarios'])
+        res = reformat_markdown_headers(res, ['Description', 'Features', 'Standards', 'Scenarios'])
         doc = RepoDoc.from_chapter(res)
         ctx.save_repo_doc(doc)
         logger.info(f'[RepoMetric] gen doc for repo, doc saved')

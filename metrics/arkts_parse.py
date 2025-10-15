@@ -58,7 +58,6 @@ class arktsParser(Metric):
                 nameSets.add(name)
                 signature = content['fullname']
                 #inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
-                sigs.append(signature)
                 filename = content['filename']
                 fields = list(
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=x['access']),
@@ -79,13 +78,14 @@ class arktsParser(Metric):
                                          attr=ClazzDef(signature=signature, filename=filename, code=code,
                                                        functions=funcs, name=name,
                                                        fields=fields))
-            # 组合关系
-            for node in list(clazz_callgraph.nodes()):
-                node: ClazzDef = clazz_callgraph.nodes[node]['attr']
-                for f in node.fields:
-                    # 如果属性的类型是其他类，则添加边
-                    if cls._trim_type(f.signature) in sigs and f.signature in clazz_callgraph.nodes:
-                        clazz_callgraph.add_edge(node.signature, f.signature)
+                sigs.append(signature)
+        # 组合关系
+        for node in list(clazz_callgraph.nodes()):
+            node: ClazzDef = clazz_callgraph.nodes[node]['attr']
+            for f in node.fields:
+                # 如果属性的类型是其他类，则添加边
+                if cls._trim_type(f.signature) in sigs and f.signature in clazz_callgraph.nodes:
+                    clazz_callgraph.add_edge(node.signature, f.signature)
             '''
             for pair in inherit_pairs:
                 for sig in pair[1]:
@@ -132,17 +132,17 @@ class arktsParser(Metric):
         if not os.path.exists(pjoin(ctx.output_path, 'methods.jsonl')):
             if sys.platform.startswith("win"):
                 subprocess.run(
-                    f'npx ts-node /arkanalyzer/arkts_test.ts "{ctx.resource_path}" "{ctx.output_path}"',
+                    f'npx ts-node /arkanalyzer/arkts_parse.ts "{ctx.resource_path}" "{ctx.output_path}"',
                     shell=True
                 )#在windows运行这个地方要改成对应的目录
             else:
                 print(ctx.resource_path,ctx.output_path)
-                src = "/root/metrics/arkts_test.ts"
-                dst = "/arkanalyzer/arkts_test.ts"
+                src = "/root/metrics/arkts_parse.ts"
+                dst = "/arkanalyzer/arkts_parse.ts"
                 # 每次运行前覆盖
                 shutil.copyfile(src, dst)
                 subprocess.run([
-                    'npx', 'ts-node', '/arkanalyzer/arkts_test.ts',
+                    'npx', 'ts-node', '/arkanalyzer/arkts_parse.ts',
                     pjoin('/root',ctx.resource_path),
                     pjoin('/root',ctx.output_path)
                 ], cwd='/arkanalyzer')

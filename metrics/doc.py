@@ -155,14 +155,17 @@ class ModuleDoc(Doc):
 
     @classmethod
     @override
-    def from_chapter_hook(cls, doc: ModuleDoc, block: str) -> ModuleDoc:
+    def from_chapter_hook(cls, doc: "ModuleDoc", block: str) -> "ModuleDoc":
         function_doc = cls.from_block(block, 'Functions')
-        doc.functions = list(filter(lambda x: len(x), map(lambda x: x.strip('- `\''), function_doc.splitlines())))
-        # try:
-        #     doc.functions = list(filter(lambda x: len(x), map(lambda x: x.strip('- `\''), function_doc.splitlines())))
-        # except:
-        #     print(1)
-        doc.example = cls.from_block(block, 'Use Case')
+        # 增强鲁棒性：更智能地解析列表，过滤空行和非列表项
+        doc.functions = [line.strip('- `\'').strip() for line in function_doc.splitlines() if line.strip().startswith('-')]
+
+        example_doc = cls.from_block(block, 'Use Case')
+        # 仅在有效找到内容时才设置example，否则为None
+        if example_doc and not example_doc.strip().startswith('['):
+            doc.example = example_doc
+        else:
+            doc.example = None
         return doc
 
     @override
@@ -198,14 +201,31 @@ class RepoDoc(Doc):
 
     @classmethod
     @override
-    def from_chapter_hook(cls, doc: RepoDoc, block: str) -> RepoDoc:
+    def from_chapter(cls, s: str) -> "RepoDoc":
+        """
+        重写基类方法，不再依赖'###'三级标题。
+        直接将整个输入字符串's'作为内容块进行解析。
+        """
+        # RepoDoc的名称固定为'README'，直接从内容块s中解析'Description'
+        doc = cls(name='README', description=cls.from_block(s, 'Description'))
+        # 调用hook方法解析剩余的'####'四级标题内容
+        return cls.from_chapter_hook(doc, s)
+
+    @classmethod
+    @override
+    def from_chapter_hook(cls, doc: "RepoDoc", block: str) -> "RepoDoc":
         features_doc = cls.from_block(block, 'Features')
-        doc.features = list(filter(lambda x: len(x), map(lambda x: x.strip('- '), features_doc.splitlines())))
+        doc.features = [line.strip('- ').strip() for line in features_doc.splitlines() if line.strip().startswith('-')]
+        
         standards_doc = cls.from_block(block, 'Standards')
-        doc.standards = list(filter(lambda x: len(x), map(lambda x: x.strip('- '), standards_doc.splitlines())))
+        doc.standards = [line.strip('- ').strip() for line in standards_doc.splitlines() if line.strip().startswith('-')]
+
         scenarios_doc = cls.from_block(block, 'Scenarios')
-        if scenarios_doc:
-            doc.scenarios = list(filter(lambda x: len(x), map(lambda x: x.strip('- '), scenarios_doc.splitlines())))
+        # 仅在scenarios_doc有效且不是'[未找到...]'时才解析
+        if scenarios_doc and not scenarios_doc.strip().startswith('['):
+            doc.scenarios = [line.strip('- ').strip() for line in scenarios_doc.splitlines() if line.strip().startswith('-')]
+        else:
+            doc.scenarios = [] # 如果未找到，则初始化为空列表
         return doc
 
     @override

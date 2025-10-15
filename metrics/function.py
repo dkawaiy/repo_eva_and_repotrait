@@ -91,6 +91,7 @@ The standard format is in the Markdown reference paragraph below, and you do not
 Please note:
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them.
 - Do not add any new Level 3 or Level 4 headings. Do not write anything outside the format.
+- You do not need to write the reference symbols `>` when you output.
 '''
 
 
