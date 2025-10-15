@@ -33,7 +33,7 @@ class LangEnum(_Lang, Enum):
     cpp = 'C/C++', 'c++', 'cpp'
 
     # TODO: 其他语言
-    # rust = 'Rust', 'rust', 'rs'
+    rust = 'Rust', 'rust', 'rs'
     javascript = 'JavaScript', 'javascript', 'js'
 
     arkts = 'arkts','ArkTs',"Arkts"
@@ -148,6 +148,7 @@ def reformat_markdown_with_headers(md_text: str, headers: List[str]) -> str:
     if parts[0].strip():
         result.insert(0, parts[0])
     return ''.join(result)
+
 
 def embedding_replace_headers(md_text: str, target_headers: List[str], 
                             model_name: str = 'all-MiniLM-L6-v2') -> str:

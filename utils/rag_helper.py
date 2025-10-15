@@ -72,7 +72,7 @@ class SimpleRAG:
             logger.debug(f'[SimpleRAG] similarity rank {i + 1}, distance: {d:.2f}, index: {j}')
         logger.info(f'[SimpleRAG] query finished')
         return I[0]
-
+  
     def kmeans(
         self,
         docs: List[str],
@@ -234,7 +234,6 @@ class SimpleRAG:
     #         else:
     #             clusters.append([_indices[i] for i in group])
     #     return clusters
-
 
     # def dbscan(self, docs: List[str], eps=0.5, min_samples=5) -> List[List[int]]:
     #     # 将文档编码为向量

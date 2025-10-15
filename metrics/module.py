@@ -5,6 +5,7 @@ from loguru import logger
 
 
 from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task,reformat_markdown_headers
+
 from .doc import ModuleDoc, ApiDoc
 from .metric import Metric
 
@@ -134,7 +135,6 @@ def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
         if f <= 0 or f > len(apis):
             logger.warning(f'[ModuleMetric] llm provide api out of range, {f}')
             continue
-        m.functions.append(apis[f - 1])
     return m
 
 

@@ -2,6 +2,7 @@ import os
 
 from loguru import logger
 
+
 from .metric import Metric
 from utils import SimpleLLM, ChatCompletionSettings
 
@@ -28,7 +29,8 @@ class StructureMetric(Metric):
                     path.endswith('.c') or
                     path.endswith('.cpp') or
                     path.endswith('.h') or
-                    path.endswith('.hpp')):
+                    path.endswith('.hpp') or
+                    path.endswith('.rs') ):
                 children.append(new_prefix + name)
         if len(children) > 0:
             children = [prefix + os.path.basename(root), *children]
