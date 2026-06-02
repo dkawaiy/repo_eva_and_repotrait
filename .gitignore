@@ -22,3 +22,4 @@ test*.sh
 .npm/
 .bashrc
 node_modules/
+/metrics/node_modules
