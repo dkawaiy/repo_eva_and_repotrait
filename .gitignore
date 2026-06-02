@@ -21,3 +21,4 @@ test*.sh
 .bashhrc
 .npm/
 .bashrc
+node_modules/
