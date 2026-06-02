@@ -33,11 +33,11 @@ class LangEnum(_Lang, Enum):
     cpp = 'C/C++', 'c++', 'cpp'
 
     # TODO: 其他语言
-    # rust = 'Rust', 'rust', 'rs'
+    rust = 'Rust', 'rust', 'rs'
     javascript = 'JavaScript', 'javascript', 'js'
 
-    arkts = 'arkts','ArkTs',"Arkts"
-
+    typescript = 'TypeScript', 'typescript', 'ts'
+    arkts = 'ArkTS', 'arkts', 'arkts'
     # java = 'Java', 'java', 'java'
     # python = 'Python', 'python', 'py'
 
@@ -149,8 +149,9 @@ def reformat_markdown_with_headers(md_text: str, headers: List[str]) -> str:
         result.insert(0, parts[0])
     return ''.join(result)
 
+
 def embedding_replace_headers(md_text: str, target_headers: List[str], 
-                            model_name: str = 'all-MiniLM-L6-v2') -> str:
+                            model_name: str = 'tomaarsen/static-retrieval-mrl-en-v1') -> str:
     """
     用embedding语义相似度将markdown中的四级标题替换为target_headers中的标题（按标题语义匹配）
     """

@@ -26,7 +26,7 @@ class SimpleRAG:
         self._use_gpu = setting.use_gpu
         self.device = None
 
-        self.model = SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')
+        self.model = SentenceTransformer('tomaarsen/static-retrieval-mrl-en-v1')
 
     def _encode_in_batches(self, docs: List[str], batch_size: int = 32) -> np.ndarray:
         if self._use_gpu and torch.cuda.is_available():
@@ -72,7 +72,7 @@ class SimpleRAG:
             logger.debug(f'[SimpleRAG] similarity rank {i + 1}, distance: {d:.2f}, index: {j}')
         logger.info(f'[SimpleRAG] query finished')
         return I[0]
-
+  
     def kmeans(
         self,
         docs: List[str],
@@ -192,6 +192,104 @@ class SimpleRAG:
             print(c)
         return [c for c in clusters if c and c is not []]
 
+    def density_cluster(
+        self,
+        docs: List[str],
+        use_umap: bool = False,
+        n_components: int = 50,
+        min_cluster_size: int = 5
+    ) -> List[List[int]]:
+        """
+        使用降维 + 密度聚类的方法对文档进行聚类
+        
+        Args:
+            docs: 文档列表
+            use_umap: 是否使用 UMAP 降维（否则使用 t-SNE）
+            n_components: 降维后的维度
+            min_cluster_size: HDBSCAN 的最小簇大小
+            
+        Returns:
+            聚类结果：List[List[原始索引]]
+        """
+        if len(docs) == 0:
+            return []
+        if len(docs) == 1:
+            return [[0]]
+            
+        # 1. 编码文档
+        try:
+            embeddings = self._encode_in_batches(docs).astype(np.float32)
+        except Exception as e:
+            logger.error(f"[SimpleRAG] Encoding failed: {e}")
+            return [[i] for i in range(len(docs))]
+        
+        n_samples = len(embeddings)
+        
+        # 2. 降维
+        logger.info(f"[SimpleRAG] Reducing dimensions from {embeddings.shape[1]} to {n_components}...")
+        
+        try:
+            if use_umap:
+                try:
+                    import umap
+                    reducer = umap.UMAP(n_components=n_components, random_state=42, n_jobs=-1)
+                    reduced_embeddings = reducer.fit_transform(embeddings)
+                    logger.info("[SimpleRAG] UMAP reduction completed")
+                except ImportError:
+                    logger.warning("[SimpleRAG] UMAP not found, falling back to t-SNE")
+                    use_umap = False
+            
+            if not use_umap:
+                from sklearn.manifold import TSNE
+                reducer = TSNE(n_components=min(n_components, n_samples - 1), random_state=42, n_jobs=-1)
+                reduced_embeddings = reducer.fit_transform(embeddings)
+                logger.info("[SimpleRAG] t-SNE reduction completed")
+                
+        except Exception as e:
+            logger.error(f"[SimpleRAG] Dimensionality reduction failed: {e}, using original embeddings")
+            reduced_embeddings = embeddings
+        
+        # 3. HDBSCAN 聚类
+        logger.info(f"[SimpleRAG] Clustering {n_samples} samples with HDBSCAN...")
+        
+        try:
+            # 优先尝试 sklearn 的 HDBSCAN (v1.3+)
+            from sklearn.cluster import HDBSCAN
+            clusterer = HDBSCAN(min_cluster_size=min(min_cluster_size, n_samples), min_samples=1)
+            labels = clusterer.fit_predict(reduced_embeddings)
+            logger.info("[SimpleRAG] Using sklearn.cluster.HDBSCAN")
+        except ImportError:
+            try:
+                # 尝试 hdbscan 独立库
+                import hdbscan
+                clusterer = hdbscan.HDBSCAN(min_cluster_size=min(min_cluster_size, n_samples), min_samples=1)
+                labels = clusterer.fit_predict(reduced_embeddings)
+                logger.info("[SimpleRAG] Using hdbscan library")
+            except ImportError:
+                logger.error("[SimpleRAG] HDBSCAN not available, falling back to single cluster")
+                return [list(range(n_samples))]
+        
+        # 4. 整理聚类结果
+        clusters_dict = defaultdict(list)
+        noise_points = []
+        
+        for i, label in enumerate(labels):
+            if label == -1:
+                # 噪声点收集到一起
+                noise_points.append(i)
+            else:
+                clusters_dict[label].append(i)
+        
+        # 将所有噪声点合并为一个簇（如果有的话）
+        clusters = list(clusters_dict.values())
+        if noise_points:
+            clusters.append(noise_points)
+            logger.info(f"[SimpleRAG] Merged {len(noise_points)} noise points into one cluster")
+        
+        logger.info(f"[SimpleRAG] Density clustering completed: {len(clusters)} clusters")
+        
+        return [c for c in clusters if c]
+
         # clusters = []
         # for group in x.values():
         #     if max_per_cluster is not None and len(group) > max_per_cluster:
@@ -234,7 +332,6 @@ class SimpleRAG:
     #         else:
     #             clusters.append([_indices[i] for i in group])
     #     return clusters
-
 
     # def dbscan(self, docs: List[str], eps=0.5, min_samples=5) -> List[List[int]]:
     #     # 将文档编码为向量

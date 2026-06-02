@@ -1,5 +1,5 @@
 from .compare import compare
-from .eva import eva_with_response, eva
+from .eva import eva_with_response, eva, download_archive
 from .vo import RAStatus, CompReq, CompResult, EvaResult, RAResult, RATask
 
 __all__ = [
@@ -11,5 +11,6 @@ __all__ = [
     'RATask',
     'eva_with_response',
     'eva',
-    'compare'
+    'compare',
+    'download_archive'
 ]

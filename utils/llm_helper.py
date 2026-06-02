@@ -47,6 +47,7 @@ class SimpleLLM:
                 messages=self._history,
                 temperature=self._setting.temperature,
                 stream=True,
+                extra_body={"enable_thinking": False},
                 stream_options={'include_usage': True}
             )
             res = self._get_stream_response(response)

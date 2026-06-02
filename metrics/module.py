@@ -5,6 +5,7 @@ from loguru import logger
 
 
 from utils import SimpleLLM, prefix_with, ChatCompletionSettings, TaskDispatcher, ProjectSettings, Task,reformat_markdown_headers
+
 from .doc import ModuleDoc, ApiDoc
 from .metric import Metric
 
@@ -34,6 +35,7 @@ Please Note:
 - Try to put every function into at least one module unless the function is really useless.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format
 - You do not need to write the reference symbols `>` when you output.
+- You need to write the symbols `-` before the ID of function when you output.
 
 Now a list of function descriptions are numbered and provided as follows, you can start working.
 {api_docs}
@@ -72,7 +74,7 @@ Please Note:
 - Don't write new Level 3 or Level 4 headings. Don't write anything outside the format. 
 - Do not output descriptions of improvements.
 - You do not need to write the reference symbols `>` when you output.
-
+- You need to write the symbols `-` before the ID of function when you output.
 
 Here is the documentation of the module you need to enhance:
 

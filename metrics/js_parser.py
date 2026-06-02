@@ -19,29 +19,79 @@ class JSlangParser(Metric):
     def _load_callgraph(cls, ctx: EvaContext):
         #visible_sets = cls._get_visible_functions(ctx)
         callgraph = nx.DiGraph()
+        methods_path = pjoin(ctx.output_path, 'methods.jsonl')
+        if not os.path.isfile(methods_path):
+            logger.warning(f"[JSlangParser] methods.jsonl not found: {methods_path}")
+            ctx.callgraph = callgraph
+            return
 
-        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:
+        # first pass: create nodes (with safe file reading)
+        with open(methods_path, 'r') as f:
             for line in f:
-                content = json.loads(line.strip())
-                name = content['name']
+                try:
+                    content = json.loads(line.strip())
+                except Exception as ex:
+                    logger.exception(f"[JSlangParser] failed to parse methods.jsonl line: {ex}")
+                    continue
+                name = content.get('name')
                 #visible = name in visible_sets and 'STATIC' not in content['modifier']
-                signature = content['signature']
-                filename = content['filename']
-                access = cls._get_access(content['modifier'])
-                beginLine = content['beginLine']
-                endLine = content['endLine']
-                with open(pjoin(ctx.resource_path, filename), 'r') as f2:
-                    code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
-                params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
+                signature = content.get('signature')
+                filename = content.get('filename')
+                access = cls._get_access(content.get('modifier', ''))
+                beginLine = content.get('beginLine', 1)
+                endLine = content.get('endLine', beginLine)
+
+                params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content.get('params', [])))
+
+                code = ''
+                # skip placeholder-like filenames such as "<includes>"
+                is_placeholder = not filename or (isinstance(filename, str) and ('<' in filename or '>' in filename or filename.startswith('<')))
+                if is_placeholder:
+                    logger.warning(f"[JSlangParser] placeholder or invalid filename: {filename} (signature={signature})")
+                else:
+                    file_path = pjoin(ctx.resource_path, filename)
+                    if not os.path.isfile(file_path):
+                        logger.warning(f"[JSlangParser] file not found: {file_path} (signature={signature})")
+                    else:
+                        try:
+                            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f2:
+                                lines = f2.readlines()
+                                try:
+                                    b = max(1, int(beginLine))
+                                    e = min(len(lines), int(endLine))
+                                except Exception:
+                                    b, e = 1, len(lines)
+                                if b <= e:
+                                    code = ''.join(lines[b - 1: e])
+                        except Exception as ex:
+                            logger.exception(f"[JSlangParser] error reading file {file_path}: {ex}")
+
+                # filter out invalid/empty nodes to avoid edges pointing to empty nodes
+                if not signature:
+                    logger.warning(f"[JSlangParser] missing signature, skip node (filename={filename})")
+                    continue
+                # 如果是占位符文件且没有读取到代码，则跳过该节点
+                if is_placeholder and not code:
+                    logger.info(f"[JSlangParser] skipping node with placeholder filename and empty code: signature={signature}")
+                    continue
+
                 callgraph.add_node(signature,
                                    attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
                                                 code=code, visible=True, access=access))
-        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:
+
+        # second pass: add edges
+        with open(methods_path, 'r') as f:
             for line in f:
-                content = json.loads(line.strip())        
-                for t in content['callees']:
+                try:
+                    content = json.loads(line.strip())
+                except Exception as ex:
+                    logger.exception(f"[JSlangParser] failed to parse methods.jsonl line for edges: {ex}")
+                    continue
+                signature = content.get('signature')
+                for t in content.get('callees', []):
                     if signature in callgraph and t in callgraph:
                         callgraph.add_edge(signature, t)
+
         ctx.callgraph = remove_cycle(callgraph)
 
     @classmethod

@@ -5,8 +5,9 @@ import sys
 import requests
 from loguru import logger
 
+
 from metrics import EvaContext, CParser, FunctionMetric, ClazzMetric, ModuleMetric, RepoV2Metric, JSlangParser, \
-    ModuleV2Metric,arktsParser
+    ModuleV2Metric,arktsParser, RustParser, RustFunctionMetric, RustClazzMetric, TSAnalyzer,ModuleV5Metric
 from utils import LangEnum, post, resolve_archive
 from .vo import EvaResult, RAResult, RAStatus, RATask
 
@@ -17,21 +18,31 @@ def eva(ctx: EvaContext, lang: LangEnum):
         CParser().eva(ctx)
     elif lang == LangEnum.javascript:
         JSlangParser().eva(ctx)
+    elif lang == LangEnum.rust:
+        RustParser().eva(ctx)
     elif lang == LangEnum.arkts:
         arktsParser().eva(ctx)
+    elif lang == LangEnum.typescript:
+        TSAnalyzer().eva(ctx)
     else:
         raise NotImplementedError(f'{lang} not supported')
     # 生成软件目录结构，TODO：暂时不用了
     # StructureMetric().eva(ctx)
-    # 生成函数文档
-    FunctionMetric().eva(ctx)
-    # 生成类文档
-    ClazzMetric().eva(ctx)
-    # 生成模块文档，若API数量过多，则使用V2版本
-    if len(ctx.api_iter()) > 1000:
-        ModuleV2Metric().eva(ctx)
+    # 生成函数文档 - 对Rust语言使用增强版本
+    if lang == LangEnum.rust:
+        RustFunctionMetric().eva(ctx)
     else:
-        ModuleMetric().eva(ctx)
+        FunctionMetric().eva(ctx)
+    # 生成类文档 - 对Rust语言使用增强版本
+    if lang == LangEnum.rust:
+        RustClazzMetric().eva(ctx)
+    else:
+        ClazzMetric().eva(ctx)
+    # 生成模块文档，若API数量过多，则使用V5版本
+    if len(ctx.api_iter()) > 300:
+        ModuleV5Metric().eva(ctx,merge_op=True)
+    else:
+        ModuleV5Metric().eva(ctx)
     # 生成仓库文档
     if sys.platform.startswith("win"):
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -43,13 +54,22 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
         CParser().eva(ctx)
     elif lang == LangEnum.javascript:
         JSlangParser().eva(ctx)
+    elif lang == LangEnum.rust:
+        RustParser().eva(ctx)
+    elif lang == LangEnum.arkts:
+        arktsParser().eva(ctx)
+    elif lang == LangEnum.typescript:
+        TSAnalyzer().eva(ctx)
     else:
         raise NotImplementedError(f'{lang} not supported')
     # 生成软件目录结构，TODO：暂时不用了
     # StructureMetric().eva(ctx)
     # 生成函数文档
     try:
-        FunctionMetric().eva(ctx)
+        if lang == LangEnum.rust:
+            RustFunctionMetric().eva(ctx)
+        else:
+            FunctionMetric().eva(ctx)
     except Exception as e:
         logger.error(f'fail to generate doc for {req.repo}, err={e}')
         # 回调传错误
@@ -62,7 +82,10 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
     
     # 生成类文档
     try:
-        ClazzMetric().eva(ctx)
+        if lang == LangEnum.rust:
+            RustClazzMetric().eva(ctx)
+        else:
+            ClazzMetric().eva(ctx)
     except Exception as e:
         logger.error(f'fail to generate doc for {req.repo}, err={e}')
         # 回调传错误
@@ -77,9 +100,9 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
                  exclude_none=True, exclude_unset=True))
         return 0
     # 生成模块文档，若API数量过多，则使用V2版本
-    if len(ctx.api_iter()) > 1000:
+    if len(ctx.api_iter()) > 300:
         try:
-            ModuleV2Metric().eva(ctx)
+            ModuleV5Metric().eva(ctx,merge_op=True)
         except Exception as e:
             logger.error(f'fail to generate doc for {req.repo}, err={e}')
             # 回调传错误
@@ -96,7 +119,7 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
             return 0
     else:
         try:
-            ModuleMetric().eva(ctx)
+            ModuleV5Metric().eva(ctx)
         except Exception as e:
             logger.error(f'fail to generate doc for {req.repo}, err={e}')
             # 回调传错误

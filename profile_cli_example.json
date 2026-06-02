@@ -1,0 +1,13 @@
+{
+  "domain": "md5",
+  "repos": [
+    {
+      "path": "/root/md5-main",
+      "language": "C/C++"
+    },
+    {
+      "path": "/root/md5",
+      "language": "C/C++"
+    }
+  ]
+}

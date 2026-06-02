@@ -7,3 +7,17 @@ __pycache__
 logs
 test*.py
 test*.sh
+.cache
+.config
+.copilot
+.dotnet
+.github
+.gnupg
+.nom
+.vscode-server
+.profile
+.wget-hsts
+.bash_history
+.bashhrc
+.npm/
+.bashrc
