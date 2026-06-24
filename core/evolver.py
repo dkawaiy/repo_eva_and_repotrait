@@ -13,6 +13,7 @@ from loguru import logger
 
 from .model import DomainModel, SoftwareProfile, Feature
 from utils import SimpleLLM, ChatCompletionSettings
+from .json_utils import safe_parse_json
 from prompts import evolver_prompts
 from pathlib import Path
 
@@ -80,8 +81,7 @@ class Evolver:
         llm_response = self.llm.add_system_msg(evolver_prompts.SYSTEM_PROMPT).add_user_msg(user_prompt).ask()
 
         try:
-            cleaned_response = llm_response.strip().strip('```json').strip('```').strip()
-            decisions_data = json.loads(cleaned_response)
+            decisions_data = safe_parse_json(llm_response, component='evolver')
             decisions = [EvolutionDecision.model_validate(d) for d in decisions_data]
             logger.info(f"Successfully parsed {len(decisions)} evolution decisions from LLM.")
         except (json.JSONDecodeError, ValueError) as e:

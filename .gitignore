@@ -23,3 +23,5 @@ test*.sh
 .bashrc
 node_modules/
 /metrics/node_modules
+.gitconfig
+.ssh

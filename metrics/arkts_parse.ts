@@ -164,7 +164,7 @@ async function main() {
             continue;
         }
         // 获取所有被调用方法
-        const outgoingEdges = Array.from(cgNode.getOutgoingEdges?.() ?? []);
+        const outgoingEdges = Array.from(cgNode.getOutgoingEdges());
         const callees = outgoingEdges
             .map((edge: any) => {
                 const dstNode = edge.getDstNode();

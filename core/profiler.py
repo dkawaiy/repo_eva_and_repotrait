@@ -12,6 +12,7 @@ from loguru import logger
 
 from .model import DomainModel, SoftwareProfile, FeatureMapping
 from utils import SimpleLLM, ChatCompletionSettings
+from .json_utils import safe_parse_json
 from prompts import profiler_prompts
 from pathlib import Path
 
@@ -89,10 +90,8 @@ class Profiler:
         llm_response = self.llm.add_system_msg(profiler_prompts.SYSTEM_PROMPT).add_user_msg(user_prompt).ask()
 
         try:
-            # 解析LLM返回的结果
-            cleaned_response = llm_response.strip().strip('```json').strip('```').strip()
-            result_data = json.loads(cleaned_response)
-            
+            # 使用更耐受的解析器解析LLM返回的结果
+            result_data = safe_parse_json(llm_response, component=f'profiler_{software_name}')
             # 先创建实例，再进行验证
             profile = SoftwareProfile(
                 software_name=software_name,
