@@ -143,6 +143,8 @@ class ModuleV5Metric(ModuleMetric):
         apis: List[str] = ctx.api_iter()
         # 如果没有API，报错
         assert len(apis) > 0, 'no api found'
+        # 预建 signature -> index 字典：邻居索引查找从 O(V) 线性扫描降为 O(1)
+        api_index = {api: idx for idx, api in enumerate(apis)}
         rag = SimpleRAG(RagSettings())
         logger.info('[ModuleV5Metric] Building neighbor-aggregated embeddings...')
         
@@ -175,16 +177,8 @@ class ModuleV5Metric(ModuleMetric):
                     # 使用所有邻居
                     all_neighbors = successors + predecessors
                     
-                    # 收集邻居的索引
-                    neighbor_indices = []
-                    for neighbor in all_neighbors:
-                        try:
-                            # 找到邻居在 apis 列表中的索引
-                            neighbor_idx = next((idx for idx, a in enumerate(apis) if a == neighbor), None)
-                            if neighbor_idx is not None:
-                                neighbor_indices.append(neighbor_idx)
-                        except:
-                            continue
+                    # 收集邻居的索引（预建 signature -> index 字典，避免对每个邻居线性扫描 apis）
+                    neighbor_indices = [api_index[neighbor] for neighbor in all_neighbors if neighbor in api_index]
                     
                     # 如果有邻居，取邻居向量的平均
                     if neighbor_indices:
@@ -196,8 +190,9 @@ class ModuleV5Metric(ModuleMetric):
                 else:
                     # 不在调用图中，使用全局平均
                     neighbor_embedding = global_mean_embedding
-            except:
+            except Exception as e:
                 # 出错，使用全局平均
+                logger.debug(f'[ModuleV5Metric] neighbor embedding fallback for {api}: {e}')
                 neighbor_embedding = global_mean_embedding
             
             neighbor_embeddings.append(neighbor_embedding)
@@ -284,13 +279,16 @@ class ModuleV5Metric(ModuleMetric):
                         res = reformat_markdown_headers(res, ['Description', 'Functions'])
                         docs = ModuleDoc.from_doc(res)
                     except Exception as e2:
+                        message = (
+                            f'Failed to parse LLM response after reformatting for API group '
+                            f'(size={len(local_apis)}): {type(e2).__name__}: {e2}'
+                        )
                         logger.error(
-                            f'[ModuleV5Metric] Failed to parse LLM response after reformatting.\n'
+                            f'[ModuleV5Metric] {message}\n'
                             f'Original error: {e}\n'
-                            f'Reformat error: {e2}\n'
-                            f'API group size: {len(local_apis)}\n'
                             f'LLM response preview:\n{res[:500]}...'
                         )
+                        ctx.record_error('module_draft', message)
                         return  # 跳过这个组
                 
                 
@@ -310,16 +308,17 @@ class ModuleV5Metric(ModuleMetric):
                         )
                         
                     except Exception as e:
-                        logger.error(
-                            f'[ModuleV5Metric] Failed to process module "{doc.name}": {e}',
-                            exc_info=True
-                        )
+                        message = f'Failed to save module draft "{doc.name}": {type(e).__name__}: {e}'
+                        logger.error(f'[ModuleV5Metric] {message}', exc_info=True)
+                        ctx.record_error('module_draft', message)
                         
             except Exception as e:
-                logger.error(
-                    f'[Module5Metric] Failed to generate module for API group (size={len(local_apis)}): {e}',
-                    exc_info=True
+                message = (
+                    f'Failed to generate module for API group (size={len(local_apis)}): '
+                    f'{type(e).__name__}: {e}'
                 )
+                logger.error(f'[Module5Metric] {message}', exc_info=True)
+                ctx.record_error('module_draft', message)
 
         TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
             list(map(lambda args: Task(f=gen, args=(args,)), cluster))).run()
@@ -358,7 +357,9 @@ class ModuleV5Metric(ModuleMetric):
                 min_cluster_size=min_cluster_size
             )
         except Exception as e:
-            logger.warning(f'[ModuleV5Metric] clustering failed, fallback to singletons: {e}')
+            message = f'module clustering failed, fallback to singletons: {type(e).__name__}: {e}'
+            logger.warning(f'[ModuleV5Metric] {message}')
+            ctx.record_error('module_merge', message)
             clusters = [[i] for i in range(len(drafts))]
 
         merged_docs: List[ModuleDoc] = []
@@ -413,7 +414,9 @@ Drafts:
                         if parsed[0].description and not parsed[0].description.strip().startswith('['):
                             description = parsed[0].description
                 except Exception as e:
-                    logger.warning(f'[ModuleV5Metric] llm rename/summary failed for cluster {ci}: {e}')
+                    message = f'llm rename/summary failed for cluster {ci}: {type(e).__name__}: {e}'
+                    logger.warning(f'[ModuleV5Metric] {message}')
+                    ctx.record_error('module_merge', message)
 
             doc = ModuleDoc(name=name, description=description, functions=funcs)
             merged_docs.append(doc)

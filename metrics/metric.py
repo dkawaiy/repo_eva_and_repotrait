@@ -1,9 +1,11 @@
 import os
+import threading
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, TypeVar, Optional, Type
+from typing import Any, Dict, List, Tuple, TypeVar, Optional, Type
 
 import networkx as nx
+from loguru import logger
 
 from utils import LangEnum
 from .doc import ApiDoc, ClazzDoc, ModuleDoc, Doc, RepoDoc
@@ -79,6 +81,11 @@ class EvaContext:
         self.output_path = output_path
         os.makedirs(self.output_path, exist_ok=True)
         self.lang = lang
+        # 任务内的阶段问题记录：各度量环节将技术性失败写入此处，最终汇总到批量任务结果（避免只留日志）
+        self.errors: List[Tuple[str, str]] = []
+        # 任务内的文档索引缓存：signature/name -> Doc，避免按签名查询时反复读取解析整份 Markdown
+        self._doc_index: Dict[Tuple[str, type], Dict[str, Any]] = {}
+        self._doc_index_lock = threading.Lock()
 
     # 软件的函数调用图，用法：
     # - ctx.func_iter(), callgraph.nodes(data=True) 遍历软件内所有函数
@@ -154,31 +161,70 @@ class EvaContext:
                 return d
         return None
 
+    def record_error(self, stage: str, message: str) -> None:
+        """记录阶段性问题（技术性失败），最终会进入批量任务结果的 issues，而不是只留在日志里。"""
+        logger.warning(f'[EvaContext] stage error ({stage}): {message}')
+        self.errors.append((stage, message))
+
+    def _load_doc_index(self, filename: str, doc_type: Type[Doc]) -> Dict[str, Any]:
+        """懒加载（文件, 文档类型）→ {name: Doc} 索引；同一任务内每个文件只读取解析一次。"""
+        key = (filename, doc_type)
+        index = self._doc_index.get(key)
+        if index is not None:
+            return index
+        with self._doc_index_lock:
+            index = self._doc_index.get(key)
+            if index is None:
+                index = {}
+                for doc in EvaContext.load_docs(filename, doc_type):
+                    name = getattr(doc, 'name', None)
+                    if name and name not in index:
+                        index[name] = doc
+                self._doc_index[key] = index
+        return index
+
+    def _update_doc_index(self, filename: str, doc_type: Type[Doc], doc: Doc) -> None:
+        """文档写入时同步更新已建立的索引，保证后续查询能命中最新内容。"""
+        name = getattr(doc, 'name', None)
+        if not name:
+            return
+        key = (filename, doc_type)
+        with self._doc_index_lock:
+            index = self._doc_index.get(key)
+            if index is not None:
+                index[name] = doc
+
     # 通过函数名写入函数文档
     def save_function_doc(self, signature: str, doc: ApiDoc):
         func_def: FuncDef = self.func(signature)
-        self.save_doc(os.path.join(self.doc_path, f'{func_def.filename}.{ApiDoc.doc_type()}.md'), doc)
+        filename = os.path.join(self.doc_path, f'{func_def.filename}.{ApiDoc.doc_type()}.md')
+        self.save_doc(filename, doc)
+        self._update_doc_index(filename, ApiDoc, doc)
 
-    # 通过函数名加载函数文档
+    # 通过函数名加载函数文档（命中任务内索引，不再重复读取解析整份 Markdown）
     def load_function_doc(self, signature: str) -> Optional[ApiDoc]:
         func_def: FuncDef = self.func(signature)
         if func_def is None:
             return None
-        return self.load_doc(signature, os.path.join(self.doc_path, f'{func_def.filename}.{ApiDoc.doc_type()}.md'),
-                             ApiDoc)
+        filename = os.path.join(self.doc_path, f'{func_def.filename}.{ApiDoc.doc_type()}.md')
+        doc = self._load_doc_index(filename, ApiDoc).get(signature)
+        return doc if isinstance(doc, ApiDoc) else None
 
     # 通过类名写入类文档
     def save_clazz_doc(self, signature: str, doc: ClazzDoc):
         clazz_def: ClazzDef = self.clazz(signature)
-        self.save_doc(os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md'), doc)
+        filename = os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md')
+        self.save_doc(filename, doc)
+        self._update_doc_index(filename, ClazzDoc, doc)
 
-    # 通过类名加载类文档
+    # 通过类名加载类文档（命中任务内索引，不再重复读取解析整份 Markdown）
     def load_clazz_doc(self, signature: str) -> Optional[ClazzDoc]:
         clazz_def: ClazzDef = self.clazz(signature)
         if clazz_def is None:
             return None
-        return self.load_doc(signature, os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md'),
-                             ClazzDoc)
+        filename = os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md')
+        doc = self._load_doc_index(filename, ClazzDoc).get(signature)
+        return doc if isinstance(doc, ClazzDoc) else None
 
     # 写入单个模块文档
     def save_module_doc(self, doc: ModuleDoc):

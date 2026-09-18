@@ -212,9 +212,9 @@ class ModuleMetric(Metric):
                 # A single pathological model response must not block or fail
                 # the complete module group.  Persist the draft as a usable
                 # fallback and allow the rest of the job to continue.
-                logger.warning(
-                    f'[ModuleMetric] enhance failed for module {m.name}; using draft fallback: {e}'
-                )
+                message = f'enhance failed for module {m.name}; using draft fallback: {type(e).__name__}: {e}'
+                logger.warning(f'[ModuleMetric] {message}')
+                ctx.record_error('module_enhance', message)
                 ctx.save_module_doc(m)
                 logger.info(
                     f'[ModuleMetric] gen doc fallback for module {i + 1}/{len(drafts)}: {m.name}'
@@ -228,7 +228,9 @@ class ModuleMetric(Metric):
                 parsed.functions = local_apis
                 doc = parsed
             except Exception as e:
-                logger.warning(f'[ModuleMetric] enhance parse failed for module {m.name}: {e}')
+                message = f'enhance parse failed for module {m.name}: {type(e).__name__}: {e}'
+                logger.warning(f'[ModuleMetric] {message}')
+                ctx.record_error('module_enhance', message)
                 # 回退：使用原始模块信息并尝试从增强结果提取Use Case或描述
                 doc = ModuleDoc(name=m.name, description=m.description, functions=local_apis)
                 try:

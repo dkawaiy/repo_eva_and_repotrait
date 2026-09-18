@@ -9,11 +9,16 @@ from typing import Any
 from urllib.parse import urlparse
 
 from api_r.api_main import persist_task_result, run_auto_profile_task
-from api_r.vo import AutoProfileTaskRequest
+from api_r.vo import AutoProfileTaskRequest, AutoProfileTaskResult_t, TaskStatus
 from core.model import DomainModel
 
 ARCHIVE_BASE_DIR = Path("resource/local_archives")
 ARCHIVE_CLEANUP: list[Path] = []
+
+# 退出码约定：0=成功，1=失败，2=部分成功（存在已记录的问题）
+EXIT_SUCCEEDED = 0
+EXIT_FAILED = 1
+EXIT_PARTIAL = 2
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -94,7 +99,7 @@ def build_task_request(config: dict[str, Any]) -> AutoProfileTaskRequest:
     )
 
 
-def run_configured_profile(config_path: Path) -> Path:
+def run_configured_profile(config_path: Path) -> AutoProfileTaskResult_t:
     config = load_config(config_path)
     req = build_task_request(config)
     try:
@@ -103,7 +108,7 @@ def run_configured_profile(config_path: Path) -> Path:
         restore_profile_names(config)
         print(result.model_dump_json(indent=2, exclude_none=True, exclude_unset=True))
         print(f"任务结果已保存到: {path}")
-        return path
+        return result
     finally:
         for archive_path in ARCHIVE_CLEANUP:
             if archive_path.exists():
@@ -113,16 +118,29 @@ def run_configured_profile(config_path: Path) -> Path:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="基于配置文件执行自动画像任务，唯一参数为 JSON 配置文件路径。"
+                    "退出码：0=成功，1=失败，2=部分成功（存在已记录的问题）。"
     )
     parser.add_argument("config_file", help="JSON 配置文件，例如 profile_cli_example.json")
     args = parser.parse_args(argv)
 
     try:
-        run_configured_profile(Path(args.config_file))
-        return 0
+        result = run_configured_profile(Path(args.config_file))
     except Exception as exc:
         print(f"执行失败: {exc}")
-        return 1
+        return EXIT_FAILED
+
+    # 退出码反映任务的最终状态，避免 failed/partial 被脚本调用者误判为成功
+    if result.status == TaskStatus.succeeded:
+        return EXIT_SUCCEEDED
+    if result.status == TaskStatus.partial:
+        print(f"部分成功: {result.message}")
+        for issue in result.issues:
+            print(f"  - [{issue.stage}] {issue.scope}: {issue.message}")
+        return EXIT_PARTIAL
+    print(f"任务失败: {result.message}")
+    for issue in result.issues:
+        print(f"  - [{issue.stage}] {issue.scope}: {issue.message}")
+    return EXIT_FAILED
 
 
 def _safe_name(text: str) -> str:

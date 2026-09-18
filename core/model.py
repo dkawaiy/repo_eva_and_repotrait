@@ -7,7 +7,7 @@ core/model.py
 import uuid
 import json
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 
 # 1. 导入你项目中的类和我们之前定义的 prompt
 from utils import ChatCompletionSettings
@@ -113,6 +113,19 @@ class SoftwareProfile(BaseModel):
     mapped_features: List[FeatureMapping] = Field([], description="成功映射到领域模型的功能列表")
     unmapped_features: List[str] = Field([], description="未能映射到领域模型的原始功能描述列表（演化的种子）")
     coverage_score: float = Field(0.0, description="本次画像对领域模型中已有功能的覆盖率")
+
+    # 生成结果状态：用于区分“技术性生成失败”与“业务上确实未匹配”
+    status: Literal["succeeded", "failed"] = Field(
+        "succeeded",
+        description="画像生成状态：succeeded=生成成功（unmapped_features 代表业务未匹配）；"
+                    "failed=生成失败（技术问题，unmapped_features 不代表业务未匹配，不应参与演化）",
+    )
+    error: Optional[str] = Field(None, description="status=failed 时的错误信息")
+
+    @property
+    def is_valid(self) -> bool:
+        """画像是否生成成功；只有生成成功的画像才允许参与领域模型演化。"""
+        return self.status == "succeeded"
 
     def to_dict(self) -> Dict[str, Any]:
         """将模型递归转换为字典"""

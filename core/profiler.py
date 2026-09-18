@@ -64,6 +64,7 @@ class Profiler:
         if not self.model.features:
             profile = SoftwareProfile(
                 software_name=software_name,
+                status="succeeded",
                 description=f"{software_name} 的功能待纳入领域模型。",
                 mapped_features=[],
                 unmapped_features=normalized_raw_features,
@@ -87,7 +88,17 @@ class Profiler:
         logger.debug("Sending profiling request to LLM.")
         
         # 遵循 core/model.py 中的调用逻辑
-        llm_response = self.llm.add_system_msg(profiler_prompts.SYSTEM_PROMPT).add_user_msg(user_prompt).ask()
+        try:
+            llm_response = self.llm.add_system_msg(profiler_prompts.SYSTEM_PROMPT).add_user_msg(user_prompt).ask()
+        except Exception as e:
+            # LLM 调用失败属于技术性错误，显式标记 failed，而不是伪装成“全部未匹配”
+            logger.error(f"LLM call failed for '{software_name}': {e}")
+            return SoftwareProfile(
+                software_name=software_name,
+                status="failed",
+                error=f"LLM call failed: {type(e).__name__}: {e}",
+                unmapped_features=[],
+            )
 
         try:
             # 使用更耐受的解析器解析LLM返回的结果
@@ -97,14 +108,21 @@ class Profiler:
                 software_name=software_name,
                 **result_data
             )
+            profile.status = "succeeded"
+            # 归一化关键字段，确保序列化结果中始终包含这两个键
+            profile.mapped_features = list(profile.mapped_features or [])
+            profile.unmapped_features = list(profile.unmapped_features or [])
             logger.info(f"Successfully parsed profiling result for '{software_name}'.")
-        except (json.JSONDecodeError, ValueError) as e:
+        except (json.JSONDecodeError, ValueError, TypeError) as e:
+            # 技术性解析失败：不能再把全部原始功能当作“未映射”——那会触发错误的领域模型演化。
+            # 显式标记 failed 并记录原因，由调用方决定是否继续/重试；失败画像不落盘。
             logger.error(f"Failed to parse LLM response for '{software_name}': {e}")
             logger.debug(f"Invalid LLM response received:\n{llm_response}")
-            # 在解析失败时返回一个空画像
             return SoftwareProfile(
                 software_name=software_name,
-                unmapped_features=normalized_raw_features
+                status="failed",
+                error=f"LLM response parse failed: {type(e).__name__}: {e}",
+                unmapped_features=[],
             )
 
         # LLM 可能返回空结果；若无任何映射且无未映射，则回退为“全部未映射”。
