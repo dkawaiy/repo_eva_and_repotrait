@@ -3,6 +3,7 @@ output
 docs
 resource
 venv
+.venv/
 __pycache__
 logs
 test*.py
@@ -25,3 +26,6 @@ node_modules/
 /metrics/node_modules
 .gitconfig
 .ssh
+REPO_ANALYSIS.md
+
+logs/
