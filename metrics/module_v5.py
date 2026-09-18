@@ -36,6 +36,8 @@ Please Note:
 - #### Functions is a list of function signatures included in this module. Please output the exact function signature as provided in the context.
 - The Level 4 headings in the format like `#### Description` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format.
 - Don't add divider lines like `---` between multiple modules.
+- Assign each provided function to exactly one module and never repeat a function across modules.
+- Keep each description concise and stop after the final function list.
 '''
 
 modules_merge_prompt = '''
@@ -69,6 +71,40 @@ Please Note:
 - Don't add divider lines like `---` between multiple modules.
 
 '''
+
+
+def partition_module_docs(docs: List[ModuleDoc], local_apis: List[str]) -> List[ModuleDoc]:
+    """Validate an LLM-produced partition without duplicating cluster APIs."""
+    allowed_apis = set(local_apis)
+    assigned_apis = set()
+    valid_docs = []
+
+    for doc in docs:
+        selected_apis = []
+        for api in (doc.functions or []):
+            if api in allowed_apis and api not in assigned_apis:
+                selected_apis.append(api)
+                assigned_apis.add(api)
+        if selected_apis:
+            doc.functions = selected_apis
+            valid_docs.append(doc)
+
+    if not valid_docs and docs:
+        # Parsing may occasionally lose the function list.  Fall back to one
+        # module for the cluster instead of duplicating all APIs across every
+        # returned module.
+        docs[0].functions = list(local_apis)
+        valid_docs = [docs[0]]
+        assigned_apis = set(local_apis)
+
+    missing_apis = [api for api in local_apis if api not in assigned_apis]
+    if missing_apis and valid_docs:
+        # Preserve complete coverage without duplication.  Put unparsed
+        # signatures on the smallest resulting module.
+        target_doc = min(valid_docs, key=lambda item: len(item.functions or []))
+        target_doc.functions.extend(missing_apis)
+
+    return valid_docs
 
 
 
@@ -227,7 +263,7 @@ class ModuleV5Metric(ModuleMetric):
                 api_docs = ''.join(
                     map(lambda a: f'- {a}\n > {ctx.load_function_doc(a).description}\n\n',
                         local_apis))
-                api_docs = api_docs[:min(100000, len(api_docs)-5)]
+                api_docs = api_docs[:100000]
                 prompt2 = modules_prompt.format(api_doc=prefix_with(api_docs, '> '))
                 
                 # 调用LLM生成模块文档
@@ -258,12 +294,14 @@ class ModuleV5Metric(ModuleMetric):
                         return  # 跳过这个组
                 
                 
-                # 直接处理每个模块文档
-                for doc in docs:
+                # Keep the partition returned by the model.  The previous
+                # implementation assigned every API in the cluster to every
+                # returned module, multiplying prompt size and producing many
+                # near-identical enhancement requests.
+                valid_docs = partition_module_docs(docs, local_apis)
+
+                for doc in valid_docs:
                     try:
-                        # 直接赋值函数列表（聚类已经决定了包含哪些函数）
-                        doc.functions = [api for api in local_apis]
-                        
                         # 保存模块文档
                         ctx.save_doc(cls.get_v5_draft_filename(ctx), doc)
                         logger.info(
