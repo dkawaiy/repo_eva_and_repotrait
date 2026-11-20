@@ -119,6 +119,7 @@ impl CargoDocIntegrator {
         cmd.arg("doc")
             .arg("--no-deps")
             .arg("--document-private-items")
+            .arg("--offline")
             .current_dir(&self.project_root);
 
         debug!("执行命令: {cmd:?}");

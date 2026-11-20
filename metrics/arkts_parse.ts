@@ -9,6 +9,8 @@ import { Scene } from "/arkanalyzer/src/Scene";
 import { ArkFile } from "/arkanalyzer/src/core/model/ArkFile";
 import { ArkClass } from "/arkanalyzer/src/core/model/ArkClass";
 import { ArkMethod } from "/arkanalyzer/src/core/model/ArkMethod";
+import { ArrayType, ClassType, Type, UnionType } from "/arkanalyzer/src/core/base/Type";
+import * as ts from "typescript";
 
 // 工具函数：生成方法签名
 function generateFunctionSignature(m: ArkMethod): string {
@@ -17,12 +19,26 @@ function generateFunctionSignature(m: ArkMethod): string {
     const parameters = m.getParameters()
         .map(p => `${getTypeFullName(p.getType())}`)
         .join(", ");
-    return `${returnType} ${name}(${parameters})`;
+    const owner = m.getDeclaringArkClass();
+    const ownerName = owner.getName().startsWith('%') ? '' : `${owner.getName()}.`;
+    return `${m.getDeclaringArkFile().getName()}:${ownerName}${name}(${parameters}) → ${returnType}`;
+}
+
+function classKey(cls: ArkClass): string {
+    return cls.getSignature().toString();
+}
+
+function referencedClassKeys(type: Type): string[] {
+    if (type instanceof ClassType) return [type.getClassSignature().toString()];
+    if (type instanceof ArrayType) return referencedClassKeys(type.getBaseType());
+    if (type instanceof UnionType) return type.getTypes().flatMap(referencedClassKeys);
+    return [];
 }
 
 // 工具函数：获取类型全名
 function getTypeFullName(type: any): string {
-    return typeof type === "string" ? type : type.toString();
+    const name = typeof type === "string" ? type : type.toString();
+    return name.replace(/@[^\s<>]+:\s*/g, '');
 }
 
 // 工具函数：检查方法是否有效
@@ -54,12 +70,6 @@ function isValidMethod(method: ArkMethod): boolean {
 
     // 过滤掉名称以 % 开头的方法
     if (method.getName().startsWith('%')) {
-        return false;
-    }
-
-    // 过滤掉返回类型为 unknown 的方法；；；；；；待定
-    const returnType = getTypeFullName(method.getReturnType());
-    if (returnType === 'unknown') {
         return false;
     }
 
@@ -101,12 +111,14 @@ async function main() {
 
     const scene = new Scene();
     scene.buildSceneFromProjectDir(sceneConfig);
+    scene.inferTypes();
 
     const files: ArkFile[] = scene.getFiles();
     const allClassInfos: any[] = [];
 
     const methods: ArkMethod[] = scene.getMethods();
     const allMethodInfos: any[] = [];
+    const methodKeys = new Map<string, string>();
 
     for (const method of methods) {
         // 检查方法是否有效
@@ -127,9 +139,11 @@ async function main() {
         }
         
         // 构建方法信息对象
+        const signature = generateFunctionSignature(method);
+        methodKeys.set(method.getSignature().toString(), signature);
         allMethodInfos.push({
             name: method.getName(),
-            signature: generateFunctionSignature(method),
+            signature,
             originalSignature: method.getSignature(),
             code: method.getCode(),
             beginLine: method.getLine(),
@@ -151,14 +165,7 @@ async function main() {
 
     // 为每个方法节点生成 callees
     for (const methodInfo of allMethodInfos) {
-        // 找到对应 ArkMethod
-        const method = methods.find(m => generateFunctionSignature(m) === methodInfo.signature);
-        if (!method) {
-            methodInfo.callees = [];
-            continue;
-        }
-        // 获取调用节点
-        const cgNode = callGraph.getCallGraphNodeByMethod(method.getSignature());
+        const cgNode = callGraph.getCallGraphNodeByMethod(methodInfo.originalSignature);
         if (!cgNode || !cgNode.getOutgoingEdges) {
             methodInfo.callees = [];
             continue;
@@ -169,15 +176,12 @@ async function main() {
             .map((edge: any) => {
                 const dstNode = edge.getDstNode();
                 if (dstNode && dstNode.getMethod()) {
-                    const arkMethod = scene.getMethod(dstNode.getMethod());
-                    if (arkMethod) {
-                        return generateFunctionSignature(arkMethod);
-                    }
+                    return methodKeys.get(dstNode.getMethod().toString());
                 }
                 return null;
             })
             .filter((sig: any) => !!sig);
-        methodInfo.callees = callees;
+        methodInfo.callees = [...new Set(callees)];
     }
 
 
@@ -192,7 +196,7 @@ async function main() {
 
             // 提取类内方法信息
             const methods = cls.getMethods()
-                .filter((m: ArkMethod) => allMethodInfos.some(info => info.signature === generateFunctionSignature(m)))
+                .filter((m: ArkMethod) => methodKeys.has(m.getSignature().toString()))
                 .map((m: ArkMethod) => ({
                     signature: generateFunctionSignature(m),
                 }));
@@ -201,21 +205,76 @@ async function main() {
             const attributes = cls.getFields ? cls.getFields().map(f => ({
                 name: f.getName(),
                 type: getTypeFullName(f.getType()),
-                access: f.isPublic()
+                access: f.isPrivate() ? 'private' : f.isProtected() ? 'protected' : 'public',
+                classKeys: referencedClassKeys(f.getType()),
             })) : [];
+            const parent = cls.getSuperClass();
+            const interfaces = cls.getImplementedInterfaceNames()
+                .map(name => cls.getImplementedInterface(name))
+                .filter((target): target is ArkClass => target != null);
             
             allClassInfos.push({
                 name: cls.getName(),
                 //signature: cls.getSignature(),//注意修改
 
                 fullname: cls.getName()+' '+file.getName(),
-                // code: cls.getCode(),
+                classKey: classKey(cls),
+                code: cls.getCode(),
+                parentKey: parent ? classKey(parent) : null,
+                interfaceKeys: interfaces.map(classKey),
                 filename: file.getName(),
                 beginLine: cls.getLine(),
                 methods,
                 attributes,
                 modifiers: cls.getModifiers()
             });
+        }
+    }
+
+    // ArkAnalyzer does not expose top-level arrow variables or bodyless abstract
+    // declarations as usable methods. Recover only these source declarations.
+    for (const file of files) {
+        const filename = file.getName();
+        const sourcePath = path.join(projectDir, filename);
+        if (!fs.existsSync(sourcePath)) continue;
+        const source = ts.createSourceFile(filename, fs.readFileSync(sourcePath, "utf8"), ts.ScriptTarget.Latest, true);
+        const addDeclaration = (name: string, owner: string, node: ts.Node,
+                                parameters: ts.NodeArray<ts.ParameterDeclaration>, returnType: ts.TypeNode | undefined,
+                                code: string) => {
+            const params = parameters.map(p => ({
+                name: p.name.getText(source),
+                type: p.type?.getText(source) || "unknown"
+            }));
+            const signature = `${filename}:${owner ? owner + "." : ""}${name}(${params.map(p => p.type).join(", ")}) → ${returnType?.getText(source) || "unknown"}`;
+            if (allMethodInfos.some(info => info.signature === signature)) return;
+            allMethodInfos.push({
+                name, signature, originalSignature: signature, code,
+                beginLine: source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1,
+                filename, modifiers: 0, access: owner ? "public" : "default",
+                params, outermethod: "", returnType: returnType?.getText(source) || "unknown", callees: []
+            });
+            if (owner) {
+                const classInfo = allClassInfos.find(info => info.name === owner && info.filename === filename);
+                if (classInfo) classInfo.methods.push({ signature });
+            }
+        };
+        for (const statement of source.statements) {
+            if (ts.isVariableStatement(statement)) {
+                for (const declaration of statement.declarationList.declarations) {
+                    if (ts.isIdentifier(declaration.name) && declaration.initializer && ts.isArrowFunction(declaration.initializer)) {
+                        const arrow = declaration.initializer;
+                        addDeclaration(declaration.name.text, "", statement, arrow.parameters, arrow.type, statement.getText(source));
+                    }
+                }
+            } else if (ts.isClassDeclaration(statement) && statement.name) {
+                for (const member of statement.members) {
+                    if (ts.isMethodDeclaration(member) && !member.body &&
+                        member.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.AbstractKeyword)) {
+                        addDeclaration(member.name.getText(source), statement.name.text, member,
+                                       member.parameters, member.type, member.getText(source));
+                    }
+                }
+            }
         }
     }
     // 确保输出目录存在
@@ -247,4 +306,7 @@ async function main() {
     console.log(`All class info has been written to ${classesOutputFile}`);
 }
 
-main().catch(err => console.error(err));
+main().catch(err => {
+    console.error(err);
+    process.exitCode = 1;
+});

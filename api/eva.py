@@ -7,7 +7,7 @@ from loguru import logger
 
 
 from metrics import EvaContext, CParser, FunctionMetric, ClazzMetric, ModuleMetric, RepoV2Metric, JSlangParser, \
-    ModuleV2Metric,arktsParser, RustParser, RustFunctionMetric, RustClazzMetric
+    ModuleV2Metric,arktsParser, RustParser, RustFunctionMetric, RustClazzMetric, TSAnalyzer,ModuleV5Metric
 from utils import LangEnum, post, resolve_archive
 from .vo import EvaResult, RAResult, RAStatus, RATask
 
@@ -22,6 +22,8 @@ def eva(ctx: EvaContext, lang: LangEnum):
         RustParser().eva(ctx)
     elif lang == LangEnum.arkts:
         arktsParser().eva(ctx)
+    elif lang == LangEnum.typescript:
+        TSAnalyzer().eva(ctx)
     else:
         raise NotImplementedError(f'{lang} not supported')
     # 生成软件目录结构，TODO：暂时不用了
@@ -36,11 +38,11 @@ def eva(ctx: EvaContext, lang: LangEnum):
         RustClazzMetric().eva(ctx)
     else:
         ClazzMetric().eva(ctx)
-    # 生成模块文档，若API数量过多，则使用V2版本
-    if len(ctx.api_iter()) > 1000:
-        ModuleV2Metric().eva(ctx)
+    # 生成模块文档，若API数量过多，则使用V5版本
+    if len(ctx.api_iter()) > 300:
+        ModuleV5Metric().eva(ctx,merge_op=True)
     else:
-        ModuleMetric().eva(ctx)
+        ModuleV5Metric().eva(ctx)
     # 生成仓库文档
     if sys.platform.startswith("win"):
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -52,6 +54,12 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
         CParser().eva(ctx)
     elif lang == LangEnum.javascript:
         JSlangParser().eva(ctx)
+    elif lang == LangEnum.rust:
+        RustParser().eva(ctx)
+    elif lang == LangEnum.arkts:
+        arktsParser().eva(ctx)
+    elif lang == LangEnum.typescript:
+        TSAnalyzer().eva(ctx)
     else:
         raise NotImplementedError(f'{lang} not supported')
     # 生成软件目录结构，TODO：暂时不用了
@@ -81,7 +89,7 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
     except Exception as e:
         logger.error(f'fail to generate doc for {req.repo}, err={e}')
         # 回调传错误
-        data = EvaResult(functions=list(map(lambda x: ctx.load_function_doc(x.signature).model_dump(),
+        data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
                                             filter(lambda x: x.visible, ctx.func_iter()))),
                          classes=[],
                          modules=[],
@@ -92,13 +100,13 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
                  exclude_none=True, exclude_unset=True))
         return 0
     # 生成模块文档，若API数量过多，则使用V2版本
-    if len(ctx.api_iter()) > 1000:
+    if len(ctx.api_iter()) > 300:
         try:
-            ModuleV2Metric().eva(ctx)
+            ModuleV5Metric().eva(ctx,merge_op=True)
         except Exception as e:
             logger.error(f'fail to generate doc for {req.repo}, err={e}')
             # 回调传错误
-            data = EvaResult(functions=list(map(lambda x: ctx.load_function_doc(x.signature).model_dump(),
+            data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
                                                 filter(lambda x: x.visible, ctx.func_iter()))),
                             classes=list(map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(),
                                             filter(lambda x: x.visible, ctx.clazz_iter()))),
@@ -111,11 +119,11 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
             return 0
     else:
         try:
-            ModuleMetric().eva(ctx)
+            ModuleV5Metric().eva(ctx)
         except Exception as e:
             logger.error(f'fail to generate doc for {req.repo}, err={e}')
             # 回调传错误
-            data = EvaResult(functions=list(map(lambda x: ctx.load_function_doc(x.signature).model_dump(),
+            data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
                                                 filter(lambda x: x.visible, ctx.func_iter()))),
                             classes=list(map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(),
                                             filter(lambda x: x.visible, ctx.clazz_iter()))),
@@ -134,7 +142,7 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
     except Exception as e:
         logger.error(f'fail to generate doc for {req.repo}, err={e}')
         # 回调传错误
-        data = EvaResult(functions=list(map(lambda x: ctx.load_function_doc(x.signature).model_dump(),
+        data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
                                             filter(lambda x: x.visible, ctx.func_iter()))),
                          classes=list(map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(),
                                           filter(lambda x: x.visible, ctx.clazz_iter()))),
@@ -159,7 +167,7 @@ def eva_with_response(req: RATask):
             return
         repo_doc = ctx.load_repo_doc()
         repo_doc = [repo_doc.model_dump()] if repo_doc is not None else []
-        data = EvaResult(functions=list(map(lambda x: ctx.load_function_doc(x.signature).model_dump(),
+        data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
                                             filter(lambda x: x.visible, ctx.func_iter()))),
                          classes=list(map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(),
                                           filter(lambda x: x.visible, ctx.clazz_iter()))),

@@ -35,6 +35,7 @@ Please Note:
 - Try to put every function into at least one module unless the function is really useless.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format
 - You do not need to write the reference symbols `>` when you output.
+- You need to write the symbols `-` before the ID of function when you output.
 
 Now a list of function descriptions are numbered and provided as follows, you can start working.
 {api_docs}
@@ -73,7 +74,9 @@ Please Note:
 - Don't write new Level 3 or Level 4 headings. Don't write anything outside the format. 
 - Do not output descriptions of improvements.
 - You do not need to write the reference symbols `>` when you output.
-
+- You need to write the symbols `-` before the ID of function when you output.
+- Keep the use case concise (at most 80 lines) and stop immediately after the closing code fence.
+- List each function at most once. Do not continue with repeated examples or repeated function lists.
 
 Here is the documentation of the module you need to enhance:
 
@@ -135,6 +138,7 @@ def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
         if f <= 0 or f > len(apis):
             logger.warning(f'[ModuleMetric] llm provide api out of range, {f}')
             continue
+        m.functions.append(apis[f - 1])
     return m
 
 
@@ -194,20 +198,49 @@ class ModuleMetric(Metric):
                 logger.warning(f'[ModuleMetric] module {m.name} contains no function')
                 return
             local_apis = m.functions
-            # 对模块函数进行编号
-            m.functions = list(map(lambda x: f'{x[0]}. {x[1]}', enumerate(m.functions, start=1)))
+            # 不改变原有函数分配：仅使用函数文档作为上下文供LLM生成描述和Use Case
             functions_doc = prefix_with('\n---\n'.join(functions_doc), '> ')
-            functions_doc = functions_doc[:min(100000,len(functions_doc)-5)]
-            # 使用原模块文档组织上下文
+            functions_doc = functions_doc[:100000]
+            # 使用原模块文档组织上下文（保持 m.functions 不变）
             module_doc = prefix_with(m.markdown(), '> ')
             prompt2 = modules_enhance_prompt.format(module_doc=module_doc, functions_doc=functions_doc,
                                                     lang=ctx.lang.markdown)
             # 生成模块文档
-            res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask()
-            res = reformat_markdown_headers(res, [ 'Description', 'Functions', 'Use Case'])
-            doc = ModuleDoc.from_chapter(res)
-            doc = number_to_api(doc, local_apis)
-            # 保存模块文档
+            try:
+                res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt2).ask()
+            except Exception as e:
+                # A single pathological model response must not block or fail
+                # the complete module group.  Persist the draft as a usable
+                # fallback and allow the rest of the job to continue.
+                logger.warning(
+                    f'[ModuleMetric] enhance failed for module {m.name}; using draft fallback: {e}'
+                )
+                ctx.save_module_doc(m)
+                logger.info(
+                    f'[ModuleMetric] gen doc fallback for module {i + 1}/{len(drafts)}: {m.name}'
+                )
+                return
+            res = reformat_markdown_headers(res, ['Description', 'Functions', 'Use Case'])
+            # 解析增强结果，但保留原始函数列表以避免因LLM格式差异导致丢失
+            try:
+                parsed = ModuleDoc.from_chapter(res)
+                # 强制保留原始函数签名
+                parsed.functions = local_apis
+                doc = parsed
+            except Exception as e:
+                logger.warning(f'[ModuleMetric] enhance parse failed for module {m.name}: {e}')
+                # 回退：使用原始模块信息并尝试从增强结果提取Use Case或描述
+                doc = ModuleDoc(name=m.name, description=m.description, functions=local_apis)
+                try:
+                    tmp = ModuleDoc.from_chapter(res)
+                    if hasattr(tmp, 'example') and tmp.example:
+                        doc.example = tmp.example
+                    # 如果增强返回了更好的描述且非占位符，则使用它
+                    if tmp.description and not tmp.description.strip().startswith('['):
+                        doc.description = tmp.description
+                except Exception:
+                    pass
+            # 保存模块文档（保留原始函数）
             ctx.save_module_doc(doc)
             logger.info(f'[ModuleMetric] gen doc for module {i + 1}/{len(drafts)}: {m.name}')
 

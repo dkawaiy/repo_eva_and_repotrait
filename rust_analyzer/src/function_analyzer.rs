@@ -93,10 +93,12 @@ impl FunctionAnalyzer {
         // 构建行号映射
         self.build_line_map();
 
-        let mut methods = Vec::new();
+        self.analyze_items(&parsed_file.items, file_path)
+    }
 
-        // 分析顶层函数
-        for item in &parsed_file.items {
+    fn analyze_items(&mut self, items: &[Item], file_path: &PathBuf) -> Result<Vec<MethodOutput>> {
+        let mut methods = Vec::new();
+        for item in items {
             match item {
                 Item::Fn(item_fn) => {
                     if let Ok(method) = self.analyze_function(item_fn, file_path, None) {
@@ -116,8 +118,27 @@ impl FunctionAnalyzer {
                                 trait_fn,
                                 file_path,
                                 &item_trait.ident.to_string(),
+                                &item_trait.vis,
                             )
                         {
+                            methods.push(method);
+                        }
+                    }
+                }
+                Item::Mod(module) => {
+                    let is_test = module.attrs.iter().any(|attr| {
+                        attr.path().is_ident("cfg")
+                            && attr.parse_args::<syn::Path>().is_ok_and(|path| path.is_ident("test"))
+                    });
+                    if !is_test && let Some((_, nested)) = &module.content {
+                        let previous = self.current_module.clone();
+                        self.current_module = format!("{previous}::{}", module.ident);
+                        let nested_methods = self.analyze_items(nested, file_path);
+                        self.current_module = previous;
+                        for mut method in nested_methods? {
+                            if !method.signature.contains("::") && let Some((ty, signature)) = method.signature.split_once(' ') {
+                                method.signature = format!("{ty} {}::{signature}", module.ident);
+                            }
                             methods.push(method);
                         }
                     }
@@ -218,7 +239,7 @@ impl FunctionAnalyzer {
 
         for impl_item in &item_impl.items {
             if let ImplItem::Fn(method) = impl_item
-                && let Ok(method_output) = self.analyze_function(
+                && let Ok(mut method_output) = self.analyze_function(
                     &ItemFn {
                         attrs: method.attrs.clone(),
                         vis: method.vis.clone(),
@@ -229,6 +250,9 @@ impl FunctionAnalyzer {
                     Some(&impl_type_name),
                 )
             {
+                if item_impl.trait_.is_some() {
+                    method_output.modifier.push_str(" TRAIT_IMPL");
+                }
                 methods.push(method_output);
             }
         }
@@ -242,6 +266,7 @@ impl FunctionAnalyzer {
         trait_fn: &syn::TraitItemFn,
         file_path: &PathBuf,
         trait_name: &str,
+        visibility: &Visibility,
     ) -> Result<MethodOutput> {
         let function_name = trait_fn.sig.ident.to_string();
         let _full_name = generate_id(
@@ -252,7 +277,7 @@ impl FunctionAnalyzer {
         let signature = self.generate_function_signature(&trait_fn.sig, Some(trait_name));
         let params = self.extract_parameters(&trait_fn.sig.inputs)?;
         let return_type = self.extract_return_type(&trait_fn.sig.output);
-        let modifier = format!("TRAIT_{}", normalize_visibility(&Visibility::Inherited));
+        let modifier = format!("TRAIT_{}", normalize_visibility(visibility));
         let (begin_line, end_line) = self.extract_line_numbers(&trait_fn.span());
 
         let filename = self.get_relative_path(file_path);

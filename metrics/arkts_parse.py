@@ -34,65 +34,65 @@ class arktsParser(Metric):
                 params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
                 callgraph.add_node(signature,
                                    attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
-                                                code=code, visible=True, access=True))
+                                                code=code, visible=True, access=content.get('access', 'public')))
         with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r') as f:        
             for line in f:
                 content = json.loads(line.strip())
-                if content['outermethod'] is None and content['outermethods'] in callgraph:
-                    callgraph.add_edge(content['outermethod'], signature)
+                signature = content['signature']
+                outer = content.get('outermethod')
+                if outer and outer in callgraph:
+                    callgraph.add_edge(outer, signature)
                 for t in content['callees']:
                     if signature in callgraph and t in callgraph:
                         callgraph.add_edge(signature, t)
-        ctx.callgraph = remove_cycle(callgraph)
+        ctx.callgraph = callgraph
 
     @classmethod
     def _load_clazz_callgraph(cls, ctx: EvaContext):
         clazz_callgraph = nx.DiGraph()
-        #inherit_pairs = []
-        sigs = []
+        records = {}
+        class_keys = {}
+        owners = {}
         with open(pjoin(ctx.output_path, 'classes.jsonl'), 'r') as f:
-            nameSets = set()
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']
-                nameSets.add(name)
                 signature = content['fullname']
-                #inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
                 filename = content['filename']
                 fields = list(
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=x['access']),
                         content['attributes']))
-                funcs = list(map(lambda n: ctx.func(n["signature"]), content['methods']))
-                code = cls._build_class_code(signature, fields, funcs)
-                # 如果没有相关函数，则尝试为其绑定函数
-                if len(funcs) == 0:
-                    for node in ctx.callgraph.nodes():
-                        node: FuncDef = ctx.callgraph.nodes[node]['attr']
-                        if any(map(lambda x: cls._trim_type(x.signature) == name, node.params)):
-                            funcs.append(node)
-                    funcs = funcs[:5]
-                # 如果没有函数和属性，则忽略这个类
-                if len(funcs) == 0 and len(fields) == 0:
-                    continue
+                funcs = [f for m in content['methods'] if (f := ctx.func(m['signature'])) is not None]
+                code = content.get('code') or cls._build_class_code(signature, fields, funcs)
                 clazz_callgraph.add_node(signature,
                                          attr=ClazzDef(signature=signature, filename=filename, code=code,
                                                        functions=funcs, name=name,
                                                        fields=fields))
-                sigs.append(signature)
-        # 组合关系
-        for node in list(clazz_callgraph.nodes()):
-            node: ClazzDef = clazz_callgraph.nodes[node]['attr']
-            for f in node.fields:
-                # 如果属性的类型是其他类，则添加边
-                if cls._trim_type(f.signature) in sigs and f.signature in clazz_callgraph.nodes:
-                    clazz_callgraph.add_edge(node.signature, f.signature)
-            '''
-            for pair in inherit_pairs:
-                for sig in pair[1]:
-                    if sig in sigs:
-                        clazz_callgraph.add_edge(pair[0],sig)'''
+                records[signature] = content
+                if content.get('classKey'):
+                    class_keys[content['classKey']] = signature
+                for func in funcs:
+                    owners[func.signature] = signature
 
-        ctx.clazz_callgraph = remove_cycle(clazz_callgraph)
+        def add_relation(source, target, kind):
+            if source is None or target is None or source == target:
+                return
+            if not clazz_callgraph.has_edge(source, target):
+                clazz_callgraph.add_edge(source, target, kinds=set())
+            clazz_callgraph[source][target]['kinds'].add(kind)
+
+        for signature, content in records.items():
+            add_relation(signature, class_keys.get(content.get('parentKey')), 'extends')
+            for key in content.get('interfaceKeys', []):
+                add_relation(signature, class_keys.get(key), 'implements')
+            for attribute in content['attributes']:
+                for key in attribute.get('classKeys', []):
+                    add_relation(signature, class_keys.get(key), 'field')
+        for caller, callee in ctx.callgraph.edges():
+            add_relation(owners.get(caller), owners.get(callee), 'calls')
+
+        ctx.callgraph = remove_cycle(ctx.callgraph)
+        ctx.clazz_callgraph = clazz_callgraph
 
     @classmethod
     def _build_class_code(cls, signature: str, fields: List[FieldDef], functions: List[FuncDef]) -> str:
@@ -101,7 +101,7 @@ class arktsParser(Metric):
             filter_fields = list(filter(lambda x: x.access == access, fields))
             filter_functions = list(filter(lambda x: x.access == access, functions))
             if len(filter_fields) == 0 and len(filter_functions) == 0:
-                return ''
+                continue
             s = f'{access}:\n'
             for f in filter_fields:
                 s += f'  {f.signature} {f.name};\n'
@@ -145,7 +145,7 @@ class arktsParser(Metric):
                     'npx', 'ts-node', '/arkanalyzer/arkts_parse.ts',
                     pjoin('/root',ctx.resource_path),
                     pjoin('/root',ctx.output_path)
-                ], cwd='/arkanalyzer')
+                ], cwd='/arkanalyzer', check=True)
         # 读取函数调用图
         self._load_callgraph(ctx)
         logger.info(

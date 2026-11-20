@@ -1,7 +1,7 @@
 use crate::error::{AnalyzerError, Result};
 
 use cargo_metadata::{DependencyKind, Metadata, MetadataCommand, Package};
-use log::{debug, info};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -109,13 +109,15 @@ pub struct TargetInfo {
 pub struct CargoAnalyzer {
     /// 项目根目录
     project_root: PathBuf,
+    /// 是否以离线模式运行 cargo metadata
+    offline: bool,
     /// Cargo元数据
     metadata: Option<Metadata>,
 }
 
 impl CargoAnalyzer {
     /// 创建新的Cargo分析器
-    pub fn new(project_root: &Path) -> Result<Self> {
+    pub fn new(project_root: &Path, offline: bool) -> Result<Self> {
         let project_root = project_root.to_path_buf();
 
         // 验证是否为有效的Rust项目
@@ -129,6 +131,7 @@ impl CargoAnalyzer {
 
         Ok(Self {
             project_root,
+            offline,
             metadata: None,
         })
     }
@@ -137,8 +140,14 @@ impl CargoAnalyzer {
     pub fn analyze(&mut self) -> Result<ProjectMetadata> {
         info!("分析Cargo项目元数据: {}", self.project_root.display());
 
-        // 获取Cargo元数据
-        let metadata = self.load_metadata()?;
+        // 获取Cargo元数据；失败时降级为最小元数据，避免因网络/依赖问题中止整个分析
+        let metadata = match self.load_metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                warn!("cargo metadata 失败，降级为最小元数据: {e}");
+                return Ok(self.fallback_metadata());
+            }
+        };
         self.metadata = Some(metadata.clone());
 
         // 解析项目信息
@@ -157,14 +166,41 @@ impl CargoAnalyzer {
         Ok(project_metadata)
     }
 
+    /// 构造最小元数据，用于 cargo metadata 失败时的降级
+    fn fallback_metadata(&self) -> ProjectMetadata {
+        let name = self
+            .project_root
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        ProjectMetadata {
+            name,
+            version: "0.0.0".to_string(),
+            description: None,
+            authors: vec![],
+            license: None,
+            homepage: None,
+            repository: None,
+            packages: vec![],
+            dependencies: HashMap::new(),
+            targets: vec![],
+            features: HashMap::new(),
+            is_workspace: false,
+            workspace_root: self.project_root.clone(),
+            workspace_config: None,
+        }
+    }
+
     /// 加载Cargo元数据
     fn load_metadata(&self) -> Result<Metadata> {
         debug!("加载Cargo元数据从: {}", self.project_root.display());
 
-        let metadata = MetadataCommand::new()
-            .manifest_path(self.project_root.join("Cargo.toml"))
-            .exec()
-            .map_err(AnalyzerError::CargoMetadata)?;
+        let mut cmd = MetadataCommand::new();
+        cmd.manifest_path(self.project_root.join("Cargo.toml"));
+        if self.offline {
+            cmd.other_options(["--offline".to_string()]);
+        }
+        let metadata = cmd.exec().map_err(AnalyzerError::CargoMetadata)?;
 
         debug!("成功加载元数据，包含 {} 个包", metadata.packages.len());
         Ok(metadata)

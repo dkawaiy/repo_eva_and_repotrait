@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, TypeVar, Optional, Type
@@ -166,6 +168,101 @@ class EvaContext:
             return None
         return self.load_doc(signature, os.path.join(self.doc_path, f'{func_def.filename}.{ApiDoc.doc_type()}.md'),
                              ApiDoc)
+
+    def function_result(self, signature: str) -> dict:
+        """Return the generated documentation with parser-owned source metadata."""
+        func = self.func(signature)
+        doc = self.load_function_doc(signature)
+        if doc is None:
+            doc = ApiDoc(name=signature, description="")
+        return doc.model_dump() | {
+            "name": self._display_function_name(func, doc.name),
+            "code": func.code or None,
+            "parameters": doc.parameters if func.params else "无",
+        }
+
+    def _display_function_name(self, func: FuncDef, original: str) -> str:
+        """Show owner.method(arguments) without changing parser or callgraph keys."""
+        name = original or func.signature
+        if self.lang == LangEnum.arkts:
+            name = re.sub(r'@[0-9a-f]{32}/[^:]+:\s*', '', name)
+            name = re.sub(r'\bGet-([\w$]+)', r'\1', name)
+            name = re.sub(r'%AM\d+(?:\$[\w$]+)?', 'callback', name)
+            return name.split(':', 1)[-1].split(' → ', 1)[0].strip()
+
+        if self.lang == LangEnum.javascript:
+            method = re.sub(r'^_tmp_\d+\.', '', func.name).replace('.prototype.', '.')
+            method = re.sub(r'^(?:module\.)?exports\.', '', method)
+            owner = ''
+            owner_param = next((p for p in func.params if p.name == 'this'), None)
+            if owner_param and ':program:' in owner_param.signature:
+                owner = owner_param.signature.rsplit(':', 1)[-1]
+            source = os.path.join(self.resource_path, func.filename)
+            if re.search(r'_tmp_\d+', func.name) and os.path.isfile(source) and func.code:
+                with open(source, encoding='utf-8', errors='replace') as stream:
+                    content = stream.read()
+                first_line = func.code.splitlines()[0].strip()
+                position = content.find(first_line) if first_line else -1
+                if position >= 0:
+                    prefix = content[:position]
+                    declarations = re.findall(
+                        r'\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:\{|\(function\b)', prefix)
+                    if declarations:
+                        owner = declarations[-1]
+            if method == owner and re.search(r'\bconstructor\s*\(', func.code):
+                method = 'constructor'
+            parameters = ', '.join(p.name for p in func.params if p.name != 'this')
+            qualified = method if not owner or method.startswith(owner + '.') else f'{owner}.{method}'
+            return f'{qualified}({parameters})'
+
+        if self.lang == LangEnum.rust:
+            if 'unknown' in name and func.code:
+                for param in func.params:
+                    if param.signature != 'unknown':
+                        continue
+                    annotation = re.search(
+                        rf'\b{re.escape(param.name)}\s*:\s*(impl\s+[A-Za-z_]\w*(?:<[^>]+>)?)', func.code)
+                    if annotation:
+                        name = name.replace('unknown', annotation.group(1), 1)
+            match = re.search(r'(?:[A-Za-z_]\w*::)*' + re.escape(func.name) + r'\(.*\)$', name)
+            if match:
+                name = match.group(0).replace('::', '.')
+            return re.sub(r'\((?:&(?:mut\s+)?)?self(?:,\s*)?', '(', name)
+
+        if self.lang == LangEnum.typescript:
+            qualified = func.signature.removeprefix(func.filename + '.')
+            parameters = ', '.join(p.signature for p in func.params if p.name != 'this')
+            return f'{qualified}({parameters})'
+
+        if self.lang == LangEnum.cpp:
+            owner_param = next((p for p in func.params if p.name == 'this'), None)
+            owner = (owner_param.signature.rstrip(' *&').replace('.', '::') if owner_param
+                     else self._cpp_declaring_owner(func.signature))
+            parameters = [p.signature for p in func.params if p.name != 'this']
+            if func.code:
+                vector_type = re.search(r'std::vector\s*<[^>]+>\s*&', func.code)
+                if vector_type:
+                    parameters = [vector_type.group(0) if p == 'std.vector&' else p for p in parameters]
+            qualified = f'{owner}::{func.name}' if owner else func.name
+            if func.name in ('[]', '==') and f'operator{func.name}' in func.code:
+                qualified = qualified[:-len(func.name)] + 'operator' + func.name
+            return f'{qualified.replace("::", ".")}({", ".join(parameters)})'
+
+        return name
+
+    def _cpp_declaring_owner(self, signature: str) -> str:
+        if not hasattr(self, '_cpp_method_owners'):
+            owners = {}
+            structs_file = os.path.join(self.output_path, 'structs.jsonl')
+            if os.path.isfile(structs_file):
+                with open(structs_file, encoding='utf-8') as stream:
+                    for line in stream:
+                        clazz = json.loads(line)
+                        for method in clazz.get('methods', []):
+                            owners.setdefault(method, set()).add(clazz['fullname'])
+            self._cpp_method_owners = owners
+        matches = self._cpp_method_owners.get(signature, set())
+        return next(iter(matches)).replace('.', '::') if len(matches) == 1 else ''
 
     # 通过类名写入类文档
     def save_clazz_doc(self, signature: str, doc: ClazzDoc):

@@ -70,6 +70,71 @@
 - 在.env中设置`THREADS`可以控制多线程的数量，默认`32`。
 - Windows下运行，建议使用UTF-8模式，例如：`python3 -X utf-8`
 
+### 画像CLI（新增）
+
+提供一个独立命令行入口 `profile_cli.py`，支持两种模式：
+
+- `from-docs`：直接使用已有 `modules.md` 做画像（可选自动演化）
+- `from-repos`：与服务端一致，先做软件度量，再做画像
+- `--config`：推荐方式，用一个 JSON 文件描述任务，减少命令参数
+
+推荐方式：
+
+```bash
+python3 profile_cli.py --config profile_cli.example.json
+```
+
+配置文件示例（按需修改 `mode`）：
+
+```json
+{
+  "mode": "from-docs",
+  "common": {
+    "task_id": "cli:demo001",
+    "domain_model_path": "models/your_domain.json",
+    "output": "output/cli_profile_from_docs.json"
+  },
+  "from_docs": {
+    "modules_dir": "./repos",
+    "evolve": true
+  },
+  "from_repos": {
+    "repos_dir": "./repos",
+    "lang": "C/C++"
+  }
+}
+```
+
+示例：
+
+```bash
+# 1) 直接基于模块文档画像
+python3 profile_cli.py from-docs \
+  --domain-model-path models/your_domain.json \
+  --module-doc docs/repo_a/modules.md \
+  --module-doc docs/repo_b/modules.md \
+  --output output/cli_profile_from_docs.json
+
+# 仅画像，不触发自动演化
+python3 profile_cli.py from-docs \
+  --domain-model-path models/your_domain.json \
+  --module-doc docs/repo_a/modules.md \
+  --no-evolve \
+  --output output/cli_profile_from_docs.json
+
+# 2) 先度量再画像（推荐使用 request 文件）
+python3 profile_cli.py from-repos \
+  --request-file input.json \
+  --output output/cli_profile_from_repos.json
+
+# 2.1) 或直接通过命令行传 repo（可重复）
+python3 profile_cli.py from-repos \
+  --domain-model-path models/your_domain.json \
+  --repo "https://example.com/a.zip,Rust" \
+  --repo "https://example.com/b.zip,JavaScript" \
+  --output output/cli_profile_from_repos.json
+```
+
 ### TODO
 
 - 功能优化

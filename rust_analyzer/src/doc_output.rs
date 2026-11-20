@@ -500,15 +500,15 @@ impl DocOutputGenerator {
     /// 从文件名中提取模块路径
     fn extract_module_from_filename(&self, filename: &str) -> String {
         use std::path::Path;
-        
+
         let path = Path::new(filename);
-        
+
         // 移除文件扩展名
         let stem = path.with_extension("");
-        
+
         // 将路径转换为模块路径格式
         let mut module_parts = Vec::new();
-        
+
         for component in stem.components() {
             match component {
                 std::path::Component::Normal(name) => {
@@ -522,7 +522,7 @@ impl DocOutputGenerator {
                 _ => {}
             }
         }
-        
+
         if module_parts.is_empty() {
             "root".to_string()
         } else {

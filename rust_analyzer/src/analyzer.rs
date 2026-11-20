@@ -25,8 +25,8 @@ pub struct RustAnalyzer {
 }
 
 impl RustAnalyzer {
-    pub fn new(source_path: PathBuf, output_path: PathBuf) -> Result<Self> {
-        let cargo_analyzer = CargoAnalyzer::new(&source_path)?;
+    pub fn new(source_path: PathBuf, output_path: PathBuf, offline: bool) -> Result<Self> {
+        let cargo_analyzer = CargoAnalyzer::new(&source_path, offline)?;
         let function_analyzer = FunctionAnalyzer::new();
         let type_analyzer = TypeAnalyzer::new();
         let output_generator = OutputGenerator::new(output_path.clone());
@@ -151,14 +151,21 @@ impl RustAnalyzer {
             .generate_statistics(&all_methods, &all_structs)?;
 
         info!("开始cargo doc集成...");
-        let mut cargo_doc_integrator = CargoDocIntegrator::new(self.source_path.clone());
-        let all_docs = if let Err(e) = cargo_doc_integrator.integrate_cargo_doc() {
-            warn!("cargo doc集成失败: {e}");
+        let all_docs = if std::env::var("RUST_ANALYZER_SKIP_CARGO_DOC").is_ok() {
+            // cargo doc 会触发 rustup 下载交叉编译 target（如 OHOS），网络不可达时会长时间卡住。
+            // 设置该环境变量可跳过此可选增强，保证核心分析快速完成。
+            warn!("RUST_ANALYZER_SKIP_CARGO_DOC 已设置，跳过 cargo doc 集成");
             std::collections::HashMap::new()
         } else {
-            info!("cargo doc集成成功");
-            // 从cargo doc integrator获取解析的文档信息
-            self.extract_doc_info_from_cargo_doc(&cargo_doc_integrator)?
+            let mut cargo_doc_integrator = CargoDocIntegrator::new(self.source_path.clone());
+            if let Err(e) = cargo_doc_integrator.integrate_cargo_doc() {
+                warn!("cargo doc集成失败: {e}");
+                std::collections::HashMap::new()
+            } else {
+                info!("cargo doc集成成功");
+                // 从cargo doc integrator获取解析的文档信息
+                self.extract_doc_info_from_cargo_doc(&cargo_doc_integrator)?
+            }
         };
 
         info!("生成文档输出...");

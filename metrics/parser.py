@@ -51,7 +51,6 @@ class CParser(Metric):
     
     @classmethod
     def _load_callgraph(cls, ctx: EvaContext):
-        visible_sets = cls._get_visible_functions(ctx)
         callgraph = nx.DiGraph()
 
         encoding = cls.file_encoding(pjoin(ctx.output_path, 'methods.jsonl'))
@@ -59,9 +58,11 @@ class CParser(Metric):
             for line in f:
                 content = json.loads(line.strip())
                 name = content['name']
-                visible = name in visible_sets and 'STATIC' not in content['modifier']
                 signature = content['signature']
                 filename = content['filename']
+                parts = re.split(r'[/\\\\]', filename.lower())
+                if any(part in {'test', 'tests', 'benchmark', 'benchmarks', 'node_modules'} for part in parts):
+                    continue
                 access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
                 endLine = content['endLine']
@@ -72,13 +73,24 @@ class CParser(Metric):
                 encoding = cls.file_encoding(pjoin(ctx.resource_path, filename))
                 with open(pjoin(ctx.resource_path, filename), 'r',encoding=encoding) as f2:
                     code = ''.join(f2.readlines()[int(beginLine) - 1: int(endLine)])
+                # Include real definitions, including inline templates and source-only helpers.
+                # Keep explicit pure/defaulted members, but omit ordinary prototypes.
+                has_body = content.get('hasBody', '{' in code)
+                declaration = content.get('declaration', '') or code
+                explicit_member = re.search(r'=\s*(?:0|default|delete)\s*;?\s*$', declaration)
+                if (not has_body or declaration.rstrip().endswith(';')) and not explicit_member:
+                    continue
+                visible = 'LAMBDA' not in content['modifier'] and not name.startswith('<')
                 params = list(map(lambda x: FieldDef(name=x['name'], signature=x['type']), content['params']))
                 callgraph.add_node(signature,
                                 attr=FuncDef(name=name, signature=signature, params=params, filename=filename,
-                                                code=code[:min(len(code),5000)], visible=visible, access=access))
-        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r', encoding=encoding) as f:    
+                                                code=code, visible=visible, access=access))
+        with open(pjoin(ctx.output_path, 'methods.jsonl'), 'r', encoding=cls.file_encoding(pjoin(ctx.output_path, 'methods.jsonl'))) as f:
             for line_1 in f:
                 content = json.loads(line_1.strip())
+                signature = content['signature']
+                if signature not in callgraph:
+                    continue
                 filename = content['filename']
                 #如果函数文件不存在跳过
                 if not os.path.exists(pjoin(ctx.resource_path, filename)):
@@ -108,7 +120,6 @@ class CParser(Metric):
                 funcs = list(map(lambda n: ctx.func(n), content['methods']))
                 # 如果funcs为空，过滤掉
                 funcs = list(filter(lambda x: x is not None, funcs))
-                code = cls._build_class_code(signature, fields, funcs)
                 # 如果没有相关函数，则尝试为其绑定函数
                 if len(funcs) == 0:
                     for node in ctx.callgraph.nodes():
@@ -116,9 +127,7 @@ class CParser(Metric):
                         if any(map(lambda x: cls._trim_type(x.signature) == name, node.params)):
                             funcs.append(node)
                     funcs = funcs[:5]
-                # 如果没有函数和属性，则忽略这个类
-                if len(funcs) == 0 and len(fields) == 0:
-                    continue
+                code = content.get('code') or cls._build_class_code(signature, fields, funcs)
                 clazz_callgraph.add_node(signature,
                                          attr=ClazzDef(signature=signature, filename=filename, code=code,
                                                        functions=funcs, name=name,
@@ -140,7 +149,7 @@ class CParser(Metric):
             filter_fields = list(filter(lambda x: x.access == access, fields))
             filter_functions = list(filter(lambda x: x.access == access, functions))
             if len(filter_fields) == 0 and len(filter_functions) == 0:
-                return ''
+                continue
             s = f'{access}:\n'
             for f in filter_fields:
                 s += f'  {f.signature} {f.name};\n'

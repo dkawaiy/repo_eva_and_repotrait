@@ -5,6 +5,7 @@ import sys
 from os.path import join as pjoin
 from typing import Set, List
 import shutil
+import re
 
 import networkx as nx
 from loguru import logger
@@ -42,6 +43,9 @@ class RustParser(Metric):
     @classmethod
     def _run_rust_analyzer(cls, ctx: EvaContext):
         """运行rust_analyzer二进制文件生成分析结果"""
+        # cargo doc 集成会触发 rustup 下载交叉编译 target（如 OHOS），网络不可达时长时间卡住。
+        # 短期默认跳过该可选增强，保证分析快速完成。
+        os.environ.setdefault('RUST_ANALYZER_SKIP_CARGO_DOC', '1')
         # 查找rust_analyzer二进制文件
         rust_analyzer_path = cls._find_rust_analyzer()
         
@@ -52,6 +56,7 @@ class RustParser(Metric):
             '--output', ctx.output_path,
             '--include-private',  # 包含私有函数
             '--skip-deps',        # 跳过外部依赖
+            '--offline',          # 离线模式，避免拉取远程依赖导致超时
             '--max-depth', '10'   # 调用链深度限制
         ]
         
@@ -146,8 +151,8 @@ class RustParser(Metric):
                 # 清理filename路径，移除resource/项目名前缀
                 filename = cls._clean_filename_path(raw_filename, ctx.repo)
                 
-                # 判断可见性：PUBLIC修饰符的函数对外可见
-                visible = 'PUBLIC' in modifier
+                # Include private functions; exclude macro and static definitions
+                visible = 'MACRO' not in modifier and "STATIC" not in modifier
                 access = cls._get_access(modifier)
                 
                 # 读取源代码 (使用原始filename路径)
@@ -207,6 +212,7 @@ class RustParser(Metric):
                 fullname = content.get('fullname', '')
                 raw_filename = content.get('filename', '')
                 begin_line = content.get('beginLine', 0)
+                trait_code = cls._source_trait_code(ctx.resource_path, raw_filename, begin_line, name)
                 
                 # 清理filename路径，移除resource/项目名前缀
                 filename = cls._clean_filename_path(raw_filename, ctx.repo)
@@ -214,6 +220,8 @@ class RustParser(Metric):
                 # 处理字段/属性
                 fields = []
                 for attr in content.get('attributes', []):
+                    if trait_code and attr.get('modifier') == 'TRAIT_METHOD':
+                        continue
                     field_name = attr.get('name', '')
                     field_type = attr.get('type', '')
                     field_modifier = attr.get('modifier', '')
@@ -229,10 +237,10 @@ class RustParser(Metric):
                         funcs.append(func_def)
                 
                 # 生成类的代码表示
-                code = cls._build_struct_code(name, fields, funcs)
+                code = trait_code or cls._build_struct_code(name, fields, funcs)
                 
                 # 如果既没有字段也没有方法，跳过这个类型
-                if len(fields) == 0 and len(funcs) == 0:
+                if len(fields) == 0 and len(funcs) == 0 and not trait_code:
                     continue
                 
                 clazz_def = ClazzDef(
@@ -256,6 +264,30 @@ class RustParser(Metric):
                     clazz_callgraph.add_edge(node, field_type)
 
         ctx.clazz_callgraph = remove_cycle(clazz_callgraph)
+
+    @classmethod
+    def _source_trait_code(cls, resource_path: str, filename: str, begin_line: int, name: str) -> str:
+        """Use the real declaration when the analyzer represents trait methods as fields."""
+        if not filename or begin_line < 1:
+            return ''
+        source = pjoin('/root', filename) if filename.startswith('resource/') else pjoin(resource_path, filename)
+        if not os.path.isfile(source):
+            return ''
+        with open(source, encoding=cls.file_encoding(source)) as f:
+            lines = f.readlines()
+        if begin_line > len(lines):
+            return ''
+        header = lines[begin_line - 1]
+        if not re.search(r'\btrait\s+' + re.escape(name) + r'\b', header):
+            return ''
+        depth = 0
+        opened = False
+        for end in range(begin_line - 1, len(lines)):
+            depth += lines[end].count('{') - lines[end].count('}')
+            opened = opened or '{' in lines[end]
+            if opened and depth == 0:
+                return ''.join(lines[begin_line - 1:end + 1])
+        return ''
 
     @classmethod
     def _clean_filename_path(cls, raw_filename: str, repo_name: str) -> str:
@@ -442,7 +474,7 @@ class RustParser(Metric):
                 rust_ext = RustClazzDefExtension(
                     doc_comment=doc.get('doc_comment'),
                     examples=doc.get('examples', []),
-                    type_kind=doc.get('type_kind', 'struct'),
+                    type_kind='trait' if clazz_def.code.lstrip().startswith(('trait ', 'pub trait ')) else doc.get('type_kind', 'struct'),
                     implemented_traits=doc.get('implemented_traits', [])
                 )
                 

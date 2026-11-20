@@ -14,7 +14,7 @@ T = TypeVar('T', bound='Doc')
 # 文档对象基类，描述了怎么从md文件中解析出文档对象，如何将文档对象转化为md文件
 class Doc(ABC, BaseModel):
     name: str  # 符号名称
-    description: Optional[str] = None  # 符号描述
+    description: str  # 符号描述
 
     # 读取字符串，返回其中的所有文档对象
     @classmethod
@@ -57,9 +57,7 @@ class Doc(ABC, BaseModel):
 
     # 将文档对象转化为markdown格式的字符串
     def markdown(self) -> str:
-        md = f'### {self.name}\n'
-        if self.description:
-            md += f'#### Description\n{self.description}\n\n'
+        md = f'### {self.name}\n#### Description\n{self.description}\n\n'
         return md + self._markdown_hook()
 
     # 使用文档对象的属性，为markdown附加内容
@@ -221,6 +219,7 @@ class RepoDoc(Doc):
         
         standards_doc = cls.from_block(block, 'Standards')
         doc.standards = [line.strip('- ').strip() for line in standards_doc.splitlines() if line.strip().startswith('-')]
+
         scenarios_doc = cls.from_block(block, 'Scenarios')
         # 仅在scenarios_doc有效且不是'[未找到...]'时才解析
         if scenarios_doc and not scenarios_doc.strip().startswith('['):

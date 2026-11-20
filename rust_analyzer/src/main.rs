@@ -56,7 +56,8 @@ fn main() -> Result<()> {
     info!("输出目录: {}", args.output_path.display());
 
     // 初始化分析器
-    let mut analyzer = RustAnalyzer::new(args.source_path.clone(), args.output_path.clone())?;
+    let mut analyzer =
+        RustAnalyzer::new(args.source_path.clone(), args.output_path.clone(), args.offline)?;
 
     // 设置详细级别
     analyzer.set_verbose(args.verbose);

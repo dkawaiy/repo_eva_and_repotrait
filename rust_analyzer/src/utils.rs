@@ -13,7 +13,11 @@ pub fn find_rust_files(dir: &Path) -> Vec<PathBuf> {
             !entry.path().components().any(|component| {
                 matches!(
                     component.as_os_str().to_str(),
-                    Some("target") | Some(".git") | Some("node_modules") | Some(".benchwork") | Some("cargo_home")
+                    Some("target")
+                        | Some(".git")
+                        | Some("node_modules")
+                        | Some(".benchwork")
+                        | Some("cargo_home")
                 )
             })
         })

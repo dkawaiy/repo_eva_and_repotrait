@@ -2,7 +2,7 @@ from typing import List
 
 from loguru import logger
 
-from utils import SimpleLLM, ChatCompletionSettings, prefix_with, TaskDispatcher, reformat_markdown_headers
+from utils import SimpleLLM, ChatCompletionSettings, prefix_with, TaskDispatcher, reformat_markdown_headers, remove_cycle
 from utils.settings import ProjectSettings
 from .doc import ApiDoc, ClazzDoc
 from .function import documentation_guideline
@@ -31,6 +31,13 @@ class ClazzMetric(Metric):
             )
             prompt = ClazzPromptBuilder().attributes(c.fields).code(c.code).functions(
                 functions).referenced(referenced).lang(ctx.lang.markdown).name(signature).build()
+            relationships = [
+                f"- {signature} → {target}: {', '.join(sorted(edge['kinds']))}"
+                for _, target, edge in callgraph.out_edges(signature, data=True)
+                if edge.get('kinds')
+            ]
+            if relationships:
+                prompt += "\n\nRelationships resolved by the static analyzer:\n" + "\n".join(relationships)
             llm = SimpleLLM(ChatCompletionSettings())
             res = llm.add_system_msg(prompt).add_user_msg(documentation_guideline).ask()
             res = reformat_markdown_headers(res, ['Description','Attributes','Code Details'])
@@ -39,7 +46,7 @@ class ClazzMetric(Metric):
             ctx.save_clazz_doc(signature, doc)
             logger.info(f'[ClazzMetric] parse {signature}')
 
-        TaskDispatcher(ProjectSettings.llm_thread_pool).map(callgraph, gen).run()
+        TaskDispatcher(ProjectSettings.llm_thread_pool).map(remove_cycle(callgraph.copy()), gen).run()
 
 
 doc_generation_instruction = (

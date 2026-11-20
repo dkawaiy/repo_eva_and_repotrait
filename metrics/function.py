@@ -44,9 +44,8 @@ class FunctionMetric(Metric):
                        map(lambda s: ctx.load_function_doc(s), callgraph.predecessors(signature)))
             )[:5]
             code_max_length = 5000
-            if len(f.code) > code_max_length:
-                f.code = f.code[:code_max_length] + '\n...'
-            prompt = _FunctionPromptBuilder().parameters(f.params).code(f.code).referencer(
+            prompt_code = f.code if len(f.code) <= code_max_length else f.code[:code_max_length] + '\n...'
+            prompt = _FunctionPromptBuilder().parameters(f.params).code(prompt_code).referencer(
                 referencer).referenced(referenced).lang(ctx.lang.markdown).name(signature).build()
             res = SimpleLLM(ChatCompletionSettings()).add_system_msg(prompt).add_user_msg(documentation_guideline).ask()
             

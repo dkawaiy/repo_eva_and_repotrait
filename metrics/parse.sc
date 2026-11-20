@@ -7,7 +7,7 @@ def isValidMethod(m: Method): Boolean = {
 }
 
 def isValidStruct(s: TypeDecl): Boolean = {
-    val regex = """(class|struct)[\w\s]*\{""".r
+    val regex = """\b(class|struct)\s+[\w]+[^;{]*\{""".r
     !s.isExternal && !s.filename.startsWith("<") && !s.code.startsWith("<") &&
         regex.findFirstIn(s.code).isDefined
 }
@@ -49,6 +49,8 @@ def generateFunctionSignature(m: Method): String = {
             "beginLine" -> m.lineNumber.head,
             "endLine" -> m.lineNumberEnd.head,
             "filename" -> m.filename,
+            "hasBody" -> m.ast.isBlock.nonEmpty,
+            "declaration" -> m.code,
             "modifier" -> m.modifier.modifierType,
             "params" -> Arr.from(m.parameter
               .map(p => Obj("name" -> p.name, "type" -> getTypeFullName(p.typeFullName)))
@@ -73,6 +75,7 @@ def generateFunctionSignature(m: Method): String = {
             "name" -> c.name,
             "fullname" -> c.fullName,
             "filename" -> c.filename,
+            "code" -> c.code,
             "beginLine" -> c.lineNumber.head,
             "methods" -> Arr.from(methods),
             "attributes" -> Arr.from(attributes)

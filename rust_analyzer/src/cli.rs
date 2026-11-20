@@ -34,6 +34,13 @@ pub struct CliArgs {
     #[arg(long = "skip-deps", help = "跳过外部依赖分析")]
     pub skip_dependencies: bool,
 
+    /// 以离线模式运行 cargo metadata
+    #[arg(
+        long = "offline",
+        help = "以离线模式运行 cargo metadata，避免拉取远程依赖"
+    )]
+    pub offline: bool,
+
     /// 包含私有项
     #[arg(long = "include-private", help = "在输出中包含私有函数和类型")]
     pub include_private: bool,
