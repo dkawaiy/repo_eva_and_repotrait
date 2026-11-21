@@ -15,8 +15,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import threading
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Optional, Tuple
 from urllib.parse import urlparse
 import os
 import re
@@ -58,6 +61,164 @@ def _evaluation_features(metric_result: dict) -> List[str]:
 
 
 
+MODEL_DIR = Path("models")
+MODEL_HISTORY_DIR = Path("logs/model_history")
+_MODEL_LOCKS: dict[str, threading.Lock] = {}
+_MODEL_LOCKS_GUARD = threading.Lock()
+
+
+class DomainModelPreservationError(RuntimeError):
+    """Raised when a profile would silently drop features of a custom model."""
+
+
+def _canonical_model_path(name: str) -> Path:
+    return MODEL_DIR / f"{name}.json"
+
+
+def _legacy_model_path(name: str) -> Path:
+    return MODEL_DIR / f"{name}_domain_model.json"
+
+
+def _model_paths(name: str) -> Tuple[Path, Path]:
+    return _canonical_model_path(name), _legacy_model_path(name)
+
+
+def _model_storage_name(name: str) -> str:
+    safe = re.sub(r"[^0-9A-Za-z_.-]+", "_", name).strip("._") or "model"
+    digest = hashlib.sha1(name.encode("utf-8")).hexdigest()[:8]
+    return f"{safe}_{digest}"
+
+
+def _model_lock(name: str) -> threading.Lock:
+    with _MODEL_LOCKS_GUARD:
+        lock = _MODEL_LOCKS.get(name)
+        if lock is None:
+            lock = threading.Lock()
+            _MODEL_LOCKS[name] = lock
+        return lock
+
+
+def _load_persisted_model(name: str) -> Optional[DomainModel]:
+    """Load a same-name model so an omitted request cannot erase a custom model."""
+    for path in _model_paths(name):
+        if not path.is_file():
+            continue
+        try:
+            model = DomainModel.load_model(path)
+        except Exception as exc:
+            logger.warning(f"[Service] ignore unreadable persisted model {path}: {exc}")
+            continue
+        if model.name != name:
+            logger.warning(f"[Service] ignore persisted model with mismatched name: {path}")
+            continue
+        if not model.features:
+            logger.warning(f"[Service] ignore persisted model without features: {path}")
+            continue
+        logger.info(
+            f"[Service] loaded persisted domain model {path} "
+            f"(features={len(model.features)}, version={model.version})"
+        )
+        return model
+    return None
+
+
+def _collect_feature_ids(model: DomainModel) -> set[str]:
+    ids: set[str] = set()
+    stack = list(model.features)
+    while stack:
+        feature = stack.pop()
+        feature_id = getattr(feature, "id", None)
+        if feature_id:
+            ids.add(feature_id)
+        stack.extend(getattr(feature, "sub_features", None) or [])
+    return ids
+
+
+def _feature_signature(model: DomainModel) -> str:
+    payload = [feature.model_dump(mode="json", exclude_none=True) for feature in model.features]
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _next_patch_version(version: str) -> str:
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", (version or "").strip())
+    if not match:
+        return f"{version}.1" if version else "1.0.1"
+    major, minor, patch = (int(part) for part in match.groups())
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def _ensure_version_advances(original: DomainModel, current: DomainModel) -> None:
+    """A changed feature set must not keep the old version number."""
+    if _feature_signature(original) == _feature_signature(current):
+        return
+    if current.version == original.version:
+        current.version = _next_patch_version(original.version)
+        logger.info(
+            f"[Service] feature set changed but version stayed {original.version}; "
+            f"bumped to {current.version}"
+        )
+
+
+def _verify_preserved_features(original: Optional[DomainModel], current: DomainModel) -> None:
+    """Custom models are a standard: profiling must never delete their feature points."""
+    if original is None or not original.features:
+        return
+    missing = sorted(_collect_feature_ids(original) - _collect_feature_ids(current))
+    if missing:
+        detail = ", ".join(missing[:10])
+        if len(missing) > 10:
+            detail += f" 等 {len(missing)} 个"
+        raise DomainModelPreservationError(f"画像结果删除了原领域模型的功能点: {detail}")
+
+
+def _snapshot_model_files(name: str) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in _model_paths(name) if path.is_file()}
+
+
+def _restore_model_files(name: str, snapshot: dict[Path, bytes]) -> None:
+    """Restore canonical/legacy files byte-for-byte; delete files first created by this task."""
+    for path in _model_paths(name):
+        if path in snapshot:
+            if not path.is_file() or path.read_bytes() != snapshot[path]:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(snapshot[path])
+                logger.warning(f"[Service] restored domain model file {path}")
+        elif path.exists():
+            path.unlink()
+            logger.warning(f"[Service] removed domain model file created by failed task: {path}")
+
+
+def _archive_model_snapshot(model: DomainModel, *, task_id: str, stage: str) -> None:
+    """Keep immutable input/output snapshots so every model change is traceable."""
+    try:
+        directory = MODEL_HISTORY_DIR / _model_storage_name(model.name)
+        directory.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        path = directory / f"{timestamp}_{stage}_{task_id}_v{model.version}.json"
+        model.save_model(path)
+        logger.info(f"[Service] archived domain model snapshot: {path}")
+    except Exception as exc:
+        logger.warning(f"[Service] failed to archive domain model snapshot: {exc}")
+
+
+def _failed_result(req: AutoProfileTaskRequest, error: Exception, metric_results: dict) -> AutoProfileTaskResult_t:
+    message = f"failed: {error}"
+    if len(message) > 500:
+        message = message[:497] + "..."
+    return AutoProfileTaskResult_t(
+        id=req.id,
+        status=TaskStatus.failed,
+        message=message,
+        domain_model_name=None,
+        domain_model_version=None,
+        profiles={},
+        metric_results=metric_results,
+        evolved_domain_model=None,
+    )
+
+
 def run_auto_profile_task(req: AutoProfileTaskRequest):
     """对外异步任务的核心实现：自动画像 → 如有未匹配则自动演化 → 重画像 → 返回最终模型。"""
     metric_results: dict[str, dict] = {}
@@ -67,74 +228,116 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
             if isinstance(req.domain_model, str)
             else DomainModel.model_validate(req.domain_model)
         )
+        with _model_lock(domain_model.name):
+            return _run_auto_profile_task_locked(req, domain_model, metric_results)
+    except Exception as e:
+        logger.exception("Auto profile task failed")
+        return _failed_result(req, e, metric_results)
+
+
+def _run_auto_profile_task_locked(
+    req: AutoProfileTaskRequest,
+    domain_model: DomainModel,
+    metric_results: dict[str, dict],
+) -> AutoProfileTaskResult_t:
+    original_model: Optional[DomainModel] = None
+    model_files_before: Optional[dict[Path, bytes]] = None
+    mutating = False
+    try:
+        # 前端可能只传名称/版本而丢失 features；优先用同名的本地模型兜底，绝不把它当空模型冷启动。
+        # evaluate 是显式的“按标准评估”，不能用本地文件替换用户传入的空标准，必须直接报错。
+        if not domain_model.features and req.mode != "evaluate":
+            persisted = _load_persisted_model(domain_model.name)
+            if persisted is not None:
+                logger.warning(
+                    "[Service] request omitted domain model features; "
+                    f"using persisted model {domain_model.name!r} v{persisted.version}"
+                )
+                domain_model = persisted
+
         evaluate_only = req.mode == "evaluate" or (req.mode is None and bool(domain_model.features))
         if evaluate_only and not domain_model.features:
             return AutoProfileTaskResult_t(
-                id=req.id, status=TaskStatus.failed, message="按标准评估需要非空的 domain_model.features",
+                id=req.id,
+                status=TaskStatus.failed,
+                message="按标准评估需要非空的 domain_model.features",
             )
-       #先构造度量任务
+        if not domain_model.features and not getattr(req, "allow_bootstrap", False):
+            return AutoProfileTaskResult_t(
+                id=req.id,
+                status=TaskStatus.failed,
+                message=(
+                    "领域模型没有功能点，已拒绝用仓库代码冷启动以避免覆盖自定义模型；"
+                    "如确需新建模型，请显式设置 allow_bootstrap=true"
+                ),
+                domain_model_name=domain_model.name,
+                domain_model_version=domain_model.version,
+            )
+
+        mutating = not evaluate_only
+        if mutating:
+            # 保存模型文件原始字节，任何中途失败都精确回滚，包括本次新建的 _domain_model.json。
+            original_model = domain_model.model_copy(deep=True)
+            model_files_before = _snapshot_model_files(domain_model.name)
+            if original_model.features:
+                _archive_model_snapshot(original_model, task_id=req.id, stage="input")
+
+        # 先构造度量任务
         repos = req.repo_urls
         software_inputs: List[Tuple[str, List[str]]] = []
-        #维护一个软件名到url的映射，后续要用
+        # 维护一个软件名到 url 的映射，后续要用
         software_to_url = {}
         for idx, repo in enumerate(repos):
             repo_url, repo_lang = repo
             path = download_archive(repo_url)
             lang = LangEnum.from_render(repo_lang)
 
-            ctx = EvaContext(repo=path, lang=lang,
-                            doc_path=os.path.join('docs', path), resource_path=os.path.join('resource', path),
-                            output_path=os.path.join('output', path))
-            '''
-            ###########
-            #测试用，节省时间和token，把已有的文档放进去
-            #把已有结果路径改成repo_url对应的路径，避免重复度量造成token和时间浪费
-            base_path = '/root/docs/1b8be0d9e4164af9be6b1c96e5188e6c'
-            #把base_path下的md文档复制粘贴到doc_path路径下
-            for file in os.listdir(base_path):
-                if file.endswith('.md'):
-                    src_file = os.path.join(base_path, file)
-                    dst_file = os.path.join(ctx.doc_path, file)
-                    if not os.path.exists(dst_file):
-                        with open(src_file, 'r', encoding='utf-8') as f_src:
-                            content = f_src.read()
-                        with open(dst_file, 'w', encoding='utf-8') as f_dst:
-                            f_dst.write(content)
-            ###########
-            '''
+            ctx = EvaContext(
+                repo=path,
+                lang=lang,
+                doc_path=os.path.join("docs", path),
+                resource_path=os.path.join("resource", path),
+                output_path=os.path.join("output", path),
+            )
             eva(ctx, lang)
             repo_doc = ctx.load_repo_doc()
             repo_doc = [repo_doc.model_dump()] if repo_doc is not None else []
-            data = EvaResult(functions=list(map(lambda x: ctx.function_result(x.signature),
-                                            filter(lambda x: x.visible, ctx.func_iter()))),
-                         classes=list(map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(),
-                                          filter(lambda x: x.visible, ctx.clazz_iter()))),
-                         modules=list(map(lambda x: x.model_dump(), ctx.load_module_docs())),
-                         repo=repo_doc).model_dump()
-            result_key = repo_url.split('.com/')[-1]
+            data = EvaResult(
+                functions=list(
+                    map(lambda x: ctx.function_result(x.signature), filter(lambda x: x.visible, ctx.func_iter()))
+                ),
+                classes=list(
+                    map(lambda x: ctx.load_clazz_doc(x.signature).model_dump(), filter(lambda x: x.visible, ctx.clazz_iter()))
+                ),
+                modules=list(map(lambda x: x.model_dump(), ctx.load_module_docs())),
+                repo=repo_doc,
+            ).model_dump()
+            result_key = repo_url.split(".com/")[-1]
             metric_results[result_key] = data
 
-            module_doc_path = Path(os.path.join('docs', path, 'modules.md'))
+            module_doc_path = Path(os.path.join("docs", path, "modules.md"))
             module_doc = parse_single_repository_file(module_doc_path)
             software_name = _software_name_from_repo_url(repo_url, idx)
-            #记录url时去除前部域名https://smes.oss-cn-heyuan.aliyuncs.com/只保留后部key
-            software_to_url[software_name] = repo_url.split('.com/')[-1]
+            # 记录url时去除前部域名 https://smes.oss-cn-heyuan.aliyuncs.com/ 只保留后部key
+            software_to_url[software_name] = repo_url.split(".com/")[-1]
             software_inputs.append(
-                (software_name, _evaluation_features(data) if evaluate_only
-                 else [module.description for module in module_doc.modules])
+                (
+                    software_name,
+                    _evaluation_features(data) if evaluate_only else [module.description for module in module_doc.modules],
+                )
             )
-        # 加载领域模型
-        if not evaluate_only:
-            domain_model.save_model(Path(os.path.join("models", f"{domain_model.name}.json")))
-        # 若领域模型为空，则基于本批次已生成的模块文档进行一次初始化。
+
+        # 只有显式 allow_bootstrap=true 才允许用仓库文档从零初始化；自定义模型绝不被隐式替换。
         if not domain_model.features:
-            logger.info("[Service] empty domain model detected, trying bootstrap initialization from batch docs")
+            logger.info("[Service] explicit bootstrap allowed, initializing domain model from batch docs")
             _initialize_empty_domain_model_from_inputs(
                 domain_model=domain_model,
                 software_inputs=software_inputs,
                 task_id=req.id,
             )
-            domain_model.save_model(Path(os.path.join("models", f"{domain_model.name}.json")))
+            if not domain_model.features:
+                raise RuntimeError("冷启动初始化后领域模型仍为空")
+
         # 初始化 Profiler
         profiler = Profiler(domain_model=domain_model)
 
@@ -144,14 +347,15 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
             profile = profiler.profile(
                 software_name=software_name,
                 raw_features=raw_features,
-                flag=1  # batch mode: always refresh to avoid stale cached profiles
+                flag=1,  # batch mode: always refresh to avoid stale cached profiles
             )
             profile.version = domain_model.version
             first_pass_profiles.append(profile)
 
         # 回调格式统一为 object/map：{software_name: profile}
         profiles: dict[str, dict] = {
-            profile.software_name: profile.model_dump(exclude_none=True, exclude_unset=True) for profile in first_pass_profiles
+            profile.software_name: profile.model_dump(exclude_none=True, exclude_unset=True)
+            for profile in first_pass_profiles
         }
 
         # 聚合未匹配特征
@@ -171,12 +375,23 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
                 profile = profiler.profile(
                     software_name=software_name,
                     raw_features=raw_features,
-                    flag=1  # force_refresh
+                    flag=1,  # force_refresh
                 )
                 profile.version = domain_model.version
                 profiles[software_name] = profile.model_dump(exclude_none=True, exclude_unset=True)
-        #将profiles的key都换成software_to_url里对应的软件url，保持和前端输入输出一致
+
+        # 将 profiles 的 key 都换成 software_to_url 里对应的软件 url，保持和前端输入输出一致
         profiles = {software_to_url.get(k, k): v for k, v in profiles.items()}
+
+        # evaluate 模式严格只读：不保存、不归档、不演化；evolve 才允许新增功能点。
+        if not evaluate_only:
+            _verify_preserved_features(original_model, domain_model)
+            if original_model is not None and original_model.features:
+                _ensure_version_advances(original_model, domain_model)
+                _verify_preserved_features(original_model, domain_model)
+            domain_model.save_model(_canonical_model_path(domain_model.name))
+            _archive_model_snapshot(domain_model, task_id=req.id, stage="output")
+
         return AutoProfileTaskResult_t(
             id=req.id,
             status=TaskStatus.succeeded,
@@ -185,20 +400,15 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
             domain_model_version=domain_model.version,
             profiles=profiles,
             metric_results=metric_results,
-            evolved_domain_model=None if evaluate_only else domain_model
+            evolved_domain_model=None if evaluate_only else domain_model,
         )
-    except Exception as e:
-        logger.exception("Auto profile task failed")
-        return AutoProfileTaskResult_t(
-            id=req.id,
-            status=TaskStatus.failed,
-            message="failed",
-            domain_model_name=None,
-            domain_model_version=None,
-            profiles={},
-            metric_results=metric_results,
-            evolved_domain_model=None
-        )
+    except Exception:
+        if mutating and model_files_before is not None:
+            try:
+                _restore_model_files(domain_model.name, model_files_before)
+            except Exception:
+                logger.exception("[Service] failed to restore domain model files after task failure")
+        raise
 
 
 def persist_task_result(result: AutoProfileTaskResult_t, *, base_dir: Path = Path("logs/tasks")) -> Path:

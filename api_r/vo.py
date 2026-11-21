@@ -22,7 +22,11 @@ class AutoProfileTaskRequest(BaseModel):
     id: str = Field(..., description="任务 ID（由调用方生成，用于幂等与查询）")
     domain_model: Union[str, dict] = Field(..., description="领域模型JSON格式文本或对象")
     mode: Optional[Literal["evaluate", "evolve"]] = Field(
-        None, description="evaluate 固定标准；evolve 允许初始化和演化。省略时非空标准固定，空标准保持原有冷启动行为",
+        None, description="evaluate 固定标准且严格只读；evolve 允许演化。省略时非空标准固定，空标准不再隐式冷启动",
+    )
+    allow_bootstrap: bool = Field(
+        False,
+        description="features 为空且本地无同名模型时，是否允许用仓库文档冷启动；默认 false，避免覆盖自定义模型",
     )
     repo_urls: List[Tuple[str, str]] = Field(..., min_length=1, description="一批软件仓库源码的地址列表以及软件对应语言")
     callback: Optional[str] = Field(

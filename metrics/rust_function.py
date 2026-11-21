@@ -54,11 +54,13 @@ class RustFunctionMetric(Metric):
             )[:4]
 
             # 使用与原metrics一致的提示构建方式，并增加Rust特有信息
-            from .function import _FunctionPromptBuilder, documentation_guideline
+            from .function import _FunctionPromptBuilder, _example_context, _repair_example, documentation_guideline
             
             # 构建标准提示（保持与原metrics一致）
-            standard_prompt = _FunctionPromptBuilder().parameters(func_def.params).code(func_def.code).referencer(
-                referencer).referenced(referenced).lang(ctx.lang.markdown).name(signature).build()
+            context = _example_context(ctx, func_def)
+            standard_prompt = _FunctionPromptBuilder().parameters(func_def.params).code(func_def.code).context(
+                context).referencer(referencer).referenced(referenced).lang(
+                ctx.lang.markdown).name(ctx._display_function_name(func_def, signature)).build()
             
             # 在原始prompt基础上添加Rust特有信息
             rust_enhanced_prompt = self._enhance_prompt_with_rust_info(standard_prompt, func_def, rust_ext, ctx)
@@ -70,6 +72,7 @@ class RustFunctionMetric(Metric):
             
             # 保存文档
             doc = ApiDoc.from_chapter(res)
+            _repair_example(ctx, func_def, doc, context)
             ctx.save_function_doc(signature, doc)
             logger.info(f'[RustFunctionMetric] generated enhanced doc for {signature}')
 

@@ -4,6 +4,9 @@ core/profiler.py
 定义画像器（Profiler）的核心逻辑。
 画像器负责将新软件的原始功能列表与现有的领域模型进行比对和映射，
 找出已匹配的功能和未匹配的“新”功能（Delta）。
+
+一条原始功能（例如一个模块描述）可能同时实现多个标准功能，因此每条决策
+使用 matches 列表表达多对多关系；旧版的单值 standard_id 仍兼容。
 """
 import json
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,16 +20,34 @@ from prompts import profiler_prompts
 from pathlib import Path
 
 
+# 低于该置信度的匹配不计入画像，原始功能改记为未映射。
+CONFIDENCE_THRESHOLD = 0.8
+
+
 # --- 核心类 ---
 
+class ProfileMatch(BaseModel):
+    """单条“原始功能 → 标准功能”匹配。"""
+    model_config = ConfigDict(extra="forbid")
+
+    standard_id: str
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    reasoning: str
+
+
 class ProfileDecision(BaseModel):
-    """LLM 返回的紧凑映射决策；原文和标准名称由服务端回填。"""
+    """LLM 返回的紧凑映射决策；原文和标准名称由服务端回填。
+
+    matches 允许一个原始功能命中多个标准功能；standard_id/confidence/reasoning
+    为旧版单映射字段，继续接受以兼容历史模型输出。
+    """
     model_config = ConfigDict(extra="forbid")
 
     raw_id: str
+    matches: List[ProfileMatch] = Field(default_factory=list)
     standard_id: Optional[str] = None
-    confidence: float = Field(..., ge=0.0, le=1.0)
-    reasoning: str
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    reasoning: Optional[str] = None
 
 
 class CompactProfileResponse(BaseModel):
@@ -49,6 +70,41 @@ def _index_domain_features(domain_model: DomainModel) -> Dict[str, str]:
     return feature_index
 
 
+def _decision_matches(decision: ProfileDecision) -> List[ProfileMatch]:
+    """合并 matches 与旧版单值字段，后者视为只有一条匹配。"""
+    matches = list(decision.matches)
+    if decision.standard_id is not None:
+        if decision.confidence is None:
+            raise ValueError(
+                f"raw_id {decision.raw_id} 提供了 standard_id 但缺少 confidence"
+            )
+        matches.append(ProfileMatch(
+            standard_id=decision.standard_id,
+            confidence=decision.confidence,
+            reasoning=decision.reasoning or "",
+        ))
+    return matches
+
+
+def _dedupe_matches(
+    matches: List[ProfileMatch],
+    feature_name_by_id: Dict[str, str],
+) -> List[ProfileMatch]:
+    """校验 standard_id 并去重；同一标准功能保留置信度最高的那条。"""
+    best_by_standard_id: Dict[str, ProfileMatch] = {}
+    order: List[str] = []
+    for match in matches:
+        if match.standard_id not in feature_name_by_id:
+            raise ValueError(f"画像结果包含未知 standard_id: {match.standard_id}")
+        previous = best_by_standard_id.get(match.standard_id)
+        if previous is None:
+            best_by_standard_id[match.standard_id] = match
+            order.append(match.standard_id)
+        elif match.confidence > previous.confidence:
+            best_by_standard_id[match.standard_id] = match
+    return [best_by_standard_id[standard_id] for standard_id in order]
+
+
 def _build_profile_from_compact_response(
     software_name: str,
     raw_feature_by_id: Dict[str, str],
@@ -64,8 +120,6 @@ def _build_profile_from_compact_response(
             raise ValueError(f"画像结果包含未知 raw_id: {decision.raw_id}")
         if decision.raw_id in decision_by_raw_id:
             raise ValueError(f"画像结果包含重复 raw_id: {decision.raw_id}")
-        if decision.standard_id is not None and decision.standard_id not in feature_name_by_id:
-            raise ValueError(f"画像结果包含未知 standard_id: {decision.standard_id}")
         decision_by_raw_id[decision.raw_id] = decision
 
     missing_raw_ids = set(raw_feature_by_id) - set(decision_by_raw_id)
@@ -76,16 +130,26 @@ def _build_profile_from_compact_response(
     unmapped_features: List[str] = []
     for raw_id, raw_description in raw_feature_by_id.items():
         decision = decision_by_raw_id[raw_id]
-        if decision.standard_id is None or decision.confidence < 0.8:
+        candidates = _dedupe_matches(
+            _decision_matches(decision),
+            feature_name_by_id,
+        )
+        accepted = [
+            match for match in candidates
+            if match.confidence >= CONFIDENCE_THRESHOLD
+        ]
+        if not accepted:
             unmapped_features.append(raw_description)
             continue
-        mapped_features.append(FeatureMapping(
-            standard_id=decision.standard_id,
-            standard_name=feature_name_by_id[decision.standard_id],
-            raw_feature_description=raw_description,
-            confidence=decision.confidence,
-            reasoning=decision.reasoning,
-        ))
+        # 同一原始功能命中多个标准功能时，每个命中都生成一条映射。
+        for match in sorted(accepted, key=lambda item: item.confidence, reverse=True):
+            mapped_features.append(FeatureMapping(
+                standard_id=match.standard_id,
+                standard_name=feature_name_by_id[match.standard_id],
+                raw_feature_description=raw_description,
+                confidence=match.confidence,
+                reasoning=match.reasoning,
+            ))
 
     return SoftwareProfile(
         software_name=software_name,
@@ -194,7 +258,13 @@ class Profiler:
             total_features_in_model = len(self.model.features)
             if total_features_in_model > 0:
                 profile.coverage_score = len(mapped_ids) / total_features_in_model
-                logger.info(f"Feature coverage for '{software_name}': {profile.coverage_score:.2%}")
+                logger.info(
+                    f"Feature coverage for '{software_name}': "
+                    f"{profile.coverage_score:.2%} "
+                    f"({len(mapped_ids)}/{total_features_in_model}, "
+                    f"{len(profile.mapped_features)} mappings from "
+                    f"{len(normalized_raw_features)} raw features)"
+                )
 
         # 保存画像文件
         profile_path = Path(f"profiles/{self.model.name}/{software_name}_profile.json")
