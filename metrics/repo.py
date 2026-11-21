@@ -28,7 +28,7 @@ The standard format is in the Markdown reference paragraph below, and you do not
 
 Please Note:
 - #### Features is a list of main features that the software providing to users. Each feature should be described in one sentences. Don't mention specific function names. Don't make up unverified features. 
-- Check the actual arithmetic and state changes in the supplied evidence. A name suggesting tax addition does not prove that the implementation adds tax; a pure pricing rule does not make a mutable cart immutable. A method named next is not necessarily an iterator protocol.
+- Check the actual arithmetic and state changes in the supplied evidence. A name suggesting tax addition does not prove that the implementation adds tax; a pure pricing rule does not make a mutable cart immutable. A method named next is not necessarily an iterator protocol. If the module or function evidence says an amount is reduced by tax, write that the software subtracts tax; never describe it as adding tax or being tax-inclusive.
 - #### Standards is the names of standards that the software designed for. For example, most of the APIs in `cJSON` are designed for JSON serialization, we can speculate it support JSON 1.0. This example does not mean that the software implements JSON 1.0, so don't write it in the README unless you are sure about it.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. 
 - Don't add new Level 3 or Level 4 headings. Do not write anything outside the format. Don't output descriptions out of the format.
@@ -109,7 +109,7 @@ Especially, you should check the following points:
 1. The description should accurately and clearly describe the main functions of the software.
 2. Ensure that each feature is implemented in software and reflects its advantages over competing products.
 3. The standards should be verified and reflect the core functionality of the software.
-4. Verify each behavior against the supplied answers and module evidence. Describe subtraction as subtraction even if a function is named addTax; distinguish mutable objects from pure calculations; do not call a next method an iterator without evidence of the iterator protocol.
+4. Verify each behavior against the supplied answers and module evidence. Describe subtraction as subtraction even if a function is named addTax; distinguish mutable objects from pure calculations; do not call a next method an iterator without evidence of the iterator protocol. If the evidence says an amount is reduced by tax, never describe it as adding tax or being tax-inclusive.
 
 The improved README should keep the same format as before with a new section "#### Scenarios".
 To ensure the same format, you should follow the standard format in the Markdown reference paragraph below. You do not need to write the reference symbols `>` when you output:
@@ -138,6 +138,69 @@ Please Note:
 '''
 
 
+_TAX_CLAIM_RE = re.compile(r'含税|增加税|加税|税额加入|税后')
+_TAX_EVIDENCE_RE = re.compile(
+    r'扣除税|减去税|扣税|扣除税费|从.{0,20}(?:金额|总额|价格|价款).{0,20}扣除|amount\s*-\s*amount\s*\*',
+    re.IGNORECASE,
+)
+
+
+def _sorted_modules(modules):
+    return sorted(modules, key=lambda m: ((m.name or '').strip(), min(m.functions or [''])))
+
+
+def _overwrite_doc(filename: str, doc):
+    """Rewrite a single-document cache instead of appending a duplicate."""
+    with open(filename, 'w', encoding='utf-8') as stream:
+        stream.write(doc.markdown() + '\n')
+
+
+def _module_evidence(ctx: EvaContext, modules) -> str:
+    parts = []
+    for module in modules:
+        parts.append(module.markdown())
+        for api in (module.functions or []):
+            func_doc = ctx.load_function_doc(api)
+            if func_doc is None:
+                continue
+            parts.append(api)
+            parts.append(func_doc.detail or '')
+            parts.append(func_doc.code or '')
+            if sum(len(part) for part in parts) > 200000:
+                break
+        if sum(len(part) for part in parts) > 200000:
+            break
+    return '\n'.join(parts)[:200000]
+
+
+def _fix_tax_direction(text: str) -> str:
+    if not text:
+        return text
+    text = text.replace('含税金额', '按税率计算税额并扣除')
+    text = text.replace('含税价格', '按税率计算税额并扣除后的价格')
+    text = text.replace('含税', '按税率计算税额并扣除')
+    text = text.replace('增加税', '扣税')
+    text = text.replace('加税', '扣税')
+    text = text.replace('税额加入', '税额扣除')
+    text = text.replace('税后金额', '扣税后的金额')
+    return text
+
+
+def _ground_repo_doc(ctx: EvaContext, doc: RepoDoc) -> RepoDoc:
+    """Correct tax-direction claims that contradict function/module evidence."""
+    if doc is None or not _TAX_CLAIM_RE.search(doc.markdown()):
+        return doc
+    evidence = _module_evidence(ctx, _sorted_modules(ctx.load_module_docs()))
+    if not _TAX_EVIDENCE_RE.search(evidence):
+        return doc
+    doc.description = _fix_tax_direction(doc.description or '')
+    doc.features = [_fix_tax_direction(feature) for feature in (doc.features or [])]
+    doc.standards = [_fix_tax_direction(standard) for standard in (doc.standards or [])]
+    doc.scenarios = [_fix_tax_direction(scenario) for scenario in (doc.scenarios or [])]
+    logger.warning('[RepoMetric] corrected tax-direction wording using function/module evidence')
+    return doc
+
+
 # 为仓库生成文档，使用大模型的tool调用能力回答问题，验证文档的准确性
 class RepoMetric(Metric):
 
@@ -160,9 +223,13 @@ class RepoMetric(Metric):
         existed_draft_doc = ctx.load_docs(cls.get_draft_filename(ctx), RepoDoc)
         if len(existed_draft_doc):
             logger.info(f'[RepoMetric] load repo draft')
-            return existed_draft_doc[0]
+            doc = existed_draft_doc[0]
+            grounded = _ground_repo_doc(ctx, doc)
+            if grounded.markdown() != doc.markdown():
+                _overwrite_doc(cls.get_draft_filename(ctx), grounded)
+            return grounded
         # 使用模块文档组织上下文
-        modules = ctx.load_module_docs()
+        modules = _sorted_modules(ctx.load_module_docs())
         # 若模块文档为空，报错
         assert len(modules) > 0, 'no module found'
         logger.info(f'[RepoMetric] gen doc for repo, modules count: {len(modules)}')
@@ -172,6 +239,7 @@ class RepoMetric(Metric):
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
         res = reformat_markdown_headers(res, ['Description', 'Features', 'Standards'])
         doc = RepoDoc.from_chapter(res)
+        doc = _ground_repo_doc(ctx, doc)
         # 保存仓库文档初稿
         ctx.save_doc(cls.get_draft_filename(ctx), doc)
         logger.info(f'[RepoMetric] gen doc for repo, draft inited')
@@ -231,7 +299,7 @@ class RepoMetric(Metric):
             }
         ]
         tools_map = {'read_functions_md': read_functions_md}
-        modules = ctx.load_module_docs()
+        modules = _sorted_modules(ctx.load_module_docs())
         modules_doc = '\n\n---\n\n'.join(map(lambda m: m.markdown(), modules))
         # 回答每个问题，LLM结果直接写入答案数组的对应位置，避免顺序错乱
         answers = [''] * len(questions)
@@ -254,14 +322,19 @@ class RepoMetric(Metric):
     # 修正仓库文档
     @classmethod
     def _revise(cls, ctx: EvaContext, draft: RepoDoc, questions: List[str], answers: List[str]):
-        if ctx.load_repo_doc():
+        existed = ctx.load_repo_doc()
+        if existed:
             logger.info(f'[RepoMetric] load docs, repo doc exist')
-            return
+            grounded = _ground_repo_doc(ctx, existed)
+            if grounded.markdown() != existed.markdown():
+                _overwrite_doc(os.path.join(ctx.doc_path, 'repo.md'), grounded)
+            return grounded
         qa_doc = '\n'.join(map(lambda i: f'- Q{i}: {questions[i]}\n > A{i}: {answers[i]}', range(len(questions))))
         prompt = repo_enhance_prompt.format(repo_doc=prefix_with(draft.markdown(), '> '), qa=prefix_with(qa_doc, '> '), lang=ctx.lang.markdown)
         res = SimpleLLM(ChatCompletionSettings()).add_user_msg(prompt).ask()
         res = reformat_markdown_headers(res, ['Description', 'Features', 'Standards', 'Scenarios'])
         doc = RepoDoc.from_chapter(res)
+        doc = _ground_repo_doc(ctx, doc)
         ctx.save_repo_doc(doc)
         logger.info(f'[RepoMetric] gen doc for repo, doc saved')
         return doc

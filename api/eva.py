@@ -1,6 +1,7 @@
+import hashlib
 import json
 import os
-import uuid
+import shutil
 import sys
 import requests
 from loguru import logger
@@ -47,6 +48,7 @@ def eva(ctx: EvaContext, lang: LangEnum):
     if sys.platform.startswith("win"):
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
     RepoV2Metric().eva(ctx)
+    mark_docs_complete(ctx)
 
 def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
     # 预处理，生成函数调用图、类调用图
@@ -158,7 +160,7 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
 
 def eva_with_response(req: RATask):
     try:
-        path = download_archive(req.repo)
+        path = download_archive(req.repo, req.language)
         lang = LangEnum.from_render(req.language)
         ctx = EvaContext(repo=req.name, lang=lang, doc_path=os.path.join('docs', path),
                          resource_path=os.path.join('resource', path),
@@ -191,21 +193,62 @@ def eva_with_response(req: RATask):
                  exclude_none=True, exclude_unset=True))
 
 
+# 文档缓存版本：模块/仓库文档生成逻辑变化时递增，避免复用旧口径的文档。
+_DOC_CACHE_VERSION = 'issue29-docs-v4'
+
+
+def _archive_cache_key(content: bytes, lang: str = '') -> str:
+    """按归档内容与语言生成稳定目录名，保证同一份代码复用同一套文档。"""
+    digest = hashlib.sha256()
+    digest.update(_DOC_CACHE_VERSION.encode('utf-8'))
+    digest.update(b'\0')
+    digest.update(str(lang or '').encode('utf-8'))
+    digest.update(b'\0')
+    digest.update(content)
+    return digest.hexdigest()[:32]
+
+
+def mark_docs_complete(ctx: EvaContext) -> None:
+    """标记本次文档已完整生成；只有带标记的缓存目录才会被后续任务复用。"""
+    marker = os.path.join(ctx.doc_path, '.complete')
+    with open(marker, 'w', encoding='utf-8') as f:
+        f.write(_DOC_CACHE_VERSION)
+
+
 # 下载仓库
-def download_archive(repo: str) -> str:
-    save_path = uuid.uuid4().hex
+def download_archive(repo: str, lang: str = '') -> str:
     if repo.startswith('file://'):
         repo = repo[7:]
         if os.path.exists(repo) and os.path.isfile(repo):
             with open(repo, 'rb') as f:
                 logger.info(f'fetch repo from local file {repo} {os.path.getsize(repo)}')
                 content = f.read()
+        else:
+            raise FileNotFoundError(repo)
     else:
         response = requests.get(repo)
         if response.status_code == 403:
             raise Exception(response.text)
         logger.info(f'fetch repo {response.status_code} {len(response.content)}')
         content = response.content
+
     archive = resolve_archive(content)
-    archive.decompress(os.path.join('resource', save_path))
+    if archive is None:
+        raise ValueError('unsupported archive format')
+
+    # 同一份归档内容(含语言)总是落到同一个目录：后续任务可直接复用
+    # 已生成的函数/模块/仓库文档，避免同一代码两次评估得到不同模块划分与简介。
+    save_path = _archive_cache_key(content, lang)
+    resource_dir = os.path.join('resource', save_path)
+    docs_dir = os.path.join('docs', save_path)
+    if os.path.isdir(resource_dir):
+        if not os.path.exists(os.path.join(docs_dir, '.complete')):
+            logger.info(f'reuse source {save_path}, but docs cache is incomplete; rebuild docs')
+            shutil.rmtree(docs_dir, ignore_errors=True)
+            shutil.rmtree(os.path.join('output', save_path), ignore_errors=True)
+        else:
+            logger.info(f'reuse cached source and docs for {save_path}')
+        return save_path
+
+    archive.decompress(resource_dir)
     return save_path

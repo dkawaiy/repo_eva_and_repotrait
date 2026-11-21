@@ -7,7 +7,7 @@ from utils import remove_cycle
 import networkx as nx
 import pydot
 from os.path import join as pjoin
-from .metric import Metric, FuncDef, FieldDef, EvaContext, ClazzDef
+from .metric import Metric, FuncDef, FieldDef, EvaContext, ClazzDef, is_test_path
 from typing import Set, List
 import re
 from loguru import logger
@@ -37,6 +37,9 @@ class JSlangParser(Metric):
                 #visible = name in visible_sets and 'STATIC' not in content['modifier']
                 signature = content.get('signature')
                 filename = content.get('filename')
+                if is_test_path(filename):
+                    logger.info(f"[JSlangParser] skip test/benchmark source: {filename}")
+                    continue
                 access = cls._get_access(content.get('modifier', ''))
                 beginLine = content.get('beginLine', 1)
                 endLine = content.get('endLine', beginLine)
@@ -114,6 +117,9 @@ class JSlangParser(Metric):
                 signature = content['fullname']
                 inherit_pairs.append([signature,content['inheritsFromTypeFullName']])
                 filename = content['filename']
+                if is_test_path(filename):
+                    logger.info(f"[JSlangParser] skip test/benchmark class: {filename}")
+                    continue
                 # Built-in types have no project source; parameter-based fallback
                 # must not turn them into project classes.
                 if not filename or filename.startswith('<'):

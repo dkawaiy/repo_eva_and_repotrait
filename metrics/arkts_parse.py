@@ -7,7 +7,7 @@ from utils import remove_cycle
 import networkx as nx
 import pydot
 from os.path import join as pjoin
-from .metric import Metric, FuncDef, FieldDef, EvaContext, ClazzDef
+from .metric import Metric, FuncDef, FieldDef, EvaContext, ClazzDef, is_test_path
 from typing import Set, List
 import re
 from loguru import logger
@@ -27,6 +27,9 @@ class arktsParser(Metric):
                 #visible = name in visible_sets and 'STATIC' not in content['modifier']
                 signature = content['signature']
                 filename = content['filename']
+                if is_test_path(filename):
+                    logger.info(f'[arktsParser] skip test/benchmark source: {filename}')
+                    continue
                 #access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
                 #endLine = content['endLine']
@@ -59,6 +62,9 @@ class arktsParser(Metric):
                 name = content['name']
                 signature = content['fullname']
                 filename = content['filename']
+                if is_test_path(filename):
+                    logger.info(f'[arktsParser] skip test/benchmark class: {filename}')
+                    continue
                 fields = list(
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=x['access']),
                         content['attributes']))

@@ -12,7 +12,7 @@ from loguru import logger
 
 from utils import remove_cycle
 from . import ClazzDef
-from .metric import Metric, EvaContext, FuncDef, FieldDef
+from .metric import Metric, EvaContext, FuncDef, FieldDef, is_test_path
 from .rust_extensions import (
     RustFuncDefExtension, RustClazzDefExtension, RustFieldDefExtension,
     RustProjectInfo, RustWorkspaceInfo, RustExtensionManager
@@ -150,6 +150,9 @@ class RustParser(Metric):
                 
                 # 清理filename路径，移除resource/项目名前缀
                 filename = cls._clean_filename_path(raw_filename, ctx.repo)
+                if is_test_path(filename):
+                    logger.info(f'[RustParser] skip test/benchmark source: {filename}')
+                    continue
                 
                 # Include private functions; exclude macro and static definitions
                 visible = 'MACRO' not in modifier and "STATIC" not in modifier
@@ -216,6 +219,9 @@ class RustParser(Metric):
                 
                 # 清理filename路径，移除resource/项目名前缀
                 filename = cls._clean_filename_path(raw_filename, ctx.repo)
+                if is_test_path(filename):
+                    logger.info(f'[RustParser] skip test/benchmark type: {filename}')
+                    continue
                 
                 # 处理字段/属性
                 fields = []

@@ -9,7 +9,7 @@ from abc import ABCMeta
 import re
 
 from .metric import ClazzDef
-from .metric import Metric, EvaContext, FuncDef, FieldDef
+from .metric import Metric, EvaContext, FuncDef, FieldDef, is_test_path
 from utils import LangEnum
 
 logger = logging.getLogger(__name__)
@@ -119,6 +119,8 @@ class TSAnalyzer(Metric):
                     if not line:
                         continue
                     func_data = json.loads(line)
+                    if is_test_path(func_data.get('filename', '')):
+                        continue
                     
                     # 验证必填字段
                     required = ['signature', 'name', 'code', 'filename', 'modifier', 'params', 'callees']
@@ -183,6 +185,8 @@ class TSAnalyzer(Metric):
                     if not line:
                         continue
                     clazz_data = json.loads(line)
+                    if is_test_path(clazz_data.get('filename', '')):
+                        continue
                     
                     # 验证必填字段
                     required = ['signature', 'name', 'code', 'filename', 'modifier', 'attributes', 'methods']

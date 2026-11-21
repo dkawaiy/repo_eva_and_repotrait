@@ -1,4 +1,5 @@
 import os.path
+import threading
 from typing import List
 
 from loguru import logger
@@ -44,9 +45,8 @@ Now a list of function descriptions are numbered and provided as follows, you ca
 modules_enhance_prompt = '''
 You are an expert in software architecture analysis. 
 Your task is to read the module documentation of a project and improve it.
-There are two key points for improvement:
-1. This module contains some functions, but these functions may not be appropriate, and you need to remove these functions.
-2. Design a usage scenario for this module. You need to mock a use case that combines as many functions as possible from the module to solve a specific problem in this scenario. The use case should be realistic and demonstrate the functionality of the module.'
+There is one key point for improvement:
+1. The function list is fixed. Do not add, remove, or move functions; improve only the description. Do not invent a usage scenario: a mocked example encourages fabricated interactions between unrelated functions, so this task must not produce one.'
 
 The improved README should keep the same format as before. To ensure the same format, you should follow the standard format in the Markdown reference paragraph below. You do not need to write the reference symbols `>` when you output:
 
@@ -56,26 +56,23 @@ The improved README should keep the same format as before. To ensure the same fo
 > #### Functions
 > - Function1
 > - Function2
-> #### Use Case
-> ```{lang}
-> Mock possible usage examples of the Module with codes.
-> ```
 
 You'd better consider the following workflow:
-1. Understand the Module. Read through the function descriptions and the module summary to gain a comprehensive understanding of the module's purpose and functionality. Identify the key functions that contribute to the module's core operations and remove any irrelevant functions.
-2. Define the Use Case. Based on the functions available in the module, define a specific problem or scenario that the module can address. Consider how multiple functions can work together to achieve a desired outcome or solve a particular issue.
-3. Rewrite the Module Summary. Update the module summary to reflect the refined list of functions and the use case you have designed. 
+1. Understand the Module. Read through the function descriptions and the module summary to gain a comprehensive understanding of the module's purpose and functionality. Identify the key functions that support the module's core operations; do not add, remove, or move any function.
+2. Rewrite the Module Summary. Update the module summary to reflect the refined list of functions and only interactions that are explicitly documented.
 
 Please Note:
-- If all functions are related to the module tightly, you don't need to remove any functions.
-- #### Functions is a list of function included in this module. The ordinal number is the ID of the function. Please use the ordinal number to refer to the function like 2, 4, 7, ..., not the function signature. Only keep the relevant functions' ordinal numbers.
-- You can revise the content in #### Description if it's not consistent with the answers to the questions.
+- Keep every function listed in the input; do not add, remove, or move functions. The caller enforces the original function list.
+- #### Functions is a list of function included in this module. The ordinal number is the ID of the function. Please output exactly the same ordinal numbers that were provided.
+- Keep the module name exactly as provided; the caller enforces the original module name.
+- Do not invent calls, data flow, or dependencies between functions. Only describe interactions that are explicitly supported by the function documentation. An unused helper must not be presented as validating another function's data.
+- You can revise the content in #### Description if it's not consistent with the function documentation.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. 
 - Don't write new Level 3 or Level 4 headings. Don't write anything outside the format. 
 - Do not output descriptions of improvements.
 - You do not need to write the reference symbols `>` when you output.
 - You need to write the symbols `-` before the ID of function when you output.
-- Keep the use case concise (at most 80 lines) and stop immediately after the closing code fence.
+- Do not output a `#### Use Case` section or any code example. The caller discards generated examples because they tend to invent interactions.
 - List each function at most once. Do not continue with repeated examples or repeated function lists.
 
 Here is the documentation of the module you need to enhance:
@@ -142,6 +139,28 @@ def number_to_api(m: ModuleDoc, apis: List[str]) -> ModuleDoc:
     return m
 
 
+def module_sort_key(doc: ModuleDoc):
+    """Stable ordering for module documents; names are unique after cleanup."""
+    name = (doc.name or '').strip()
+    first_function = min(doc.functions or [''])
+    return name, first_function
+
+
+def unique_module_names(docs: List[ModuleDoc]) -> List[ModuleDoc]:
+    """Give every module a deterministic, unique display name."""
+    used = set()
+    for index, doc in enumerate(docs, start=1):
+        base = (doc.name or '').strip() or f'未命名模块{index}'
+        candidate = base
+        suffix = 2
+        while candidate in used:
+            candidate = f'{base}（{suffix}）'
+            suffix += 1
+        doc.name = candidate
+        used.add(candidate)
+    return docs
+
+
 # 为模块生成文档
 class ModuleMetric(Metric):
 
@@ -185,6 +204,9 @@ class ModuleMetric(Metric):
             return
 
         # 优化模块文档
+        generated: List[ModuleDoc] = []
+        generated_lock = threading.Lock()
+
         def gen(i: int, m: ModuleDoc):
             # 使用简化的函数文档组织上下文
             functions_doc = []
@@ -215,37 +237,51 @@ class ModuleMetric(Metric):
                 logger.warning(
                     f'[ModuleMetric] enhance failed for module {m.name}; using draft fallback: {e}'
                 )
-                ctx.save_module_doc(m)
+                with generated_lock:
+                    generated.append(m)
                 logger.info(
                     f'[ModuleMetric] gen doc fallback for module {i + 1}/{len(drafts)}: {m.name}'
                 )
                 return
-            res = reformat_markdown_headers(res, ['Description', 'Functions', 'Use Case'])
-            # 解析增强结果，但保留原始函数列表以避免因LLM格式差异导致丢失
+            res = reformat_markdown_headers(res, ['Description', 'Functions'])
+            # 解析增强结果，但保留原始函数列表与模块名，避免 LLM 改写造成重名或拆分类方法
             try:
                 parsed = ModuleDoc.from_chapter(res)
-                # 强制保留原始函数签名
+                parsed.name = m.name
                 parsed.functions = local_apis
+                # Never persist LLM-invented use cases; they are a recurring
+                # source of fabricated function interactions.
+                parsed.example = None
                 doc = parsed
             except Exception as e:
                 logger.warning(f'[ModuleMetric] enhance parse failed for module {m.name}: {e}')
                 # 回退：使用原始模块信息并尝试从增强结果提取Use Case或描述
-                doc = ModuleDoc(name=m.name, description=m.description, functions=local_apis)
+                doc = ModuleDoc(name=m.name, description=m.description, functions=local_apis, example=None)
                 try:
                     tmp = ModuleDoc.from_chapter(res)
-                    if hasattr(tmp, 'example') and tmp.example:
-                        doc.example = tmp.example
                     # 如果增强返回了更好的描述且非占位符，则使用它
                     if tmp.description and not tmp.description.strip().startswith('['):
                         doc.description = tmp.description
                 except Exception:
                     pass
-            # 保存模块文档（保留原始函数）
-            ctx.save_module_doc(doc)
+            with generated_lock:
+                generated.append(doc)
             logger.info(f'[ModuleMetric] gen doc for module {i + 1}/{len(drafts)}: {m.name}')
 
         TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
             list(map(lambda args: Task(f=gen, args=args), enumerate(drafts)))).run()
+
+        if generated:
+            # 并行任务完成顺序不确定，统一排序后一次性写入，避免 modules.md 顺序漂移与并发追加。
+            generated.sort(key=module_sort_key)
+            unique_module_names(generated)
+            generated.sort(key=module_sort_key)
+            modules_path = os.path.join(ctx.doc_path, 'modules.md')
+            if os.path.exists(modules_path):
+                os.remove(modules_path)
+            for doc in generated:
+                ctx.save_module_doc(doc)
+            logger.info(f'[ModuleMetric] saved {len(generated)} module docs in stable order')
 
     def eva(self, ctx):
         try:

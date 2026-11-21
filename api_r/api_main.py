@@ -289,7 +289,7 @@ def _run_auto_profile_task_locked(
         software_to_url = {}
         for idx, repo in enumerate(repos):
             repo_url, repo_lang = repo
-            path = download_archive(repo_url)
+            path = download_archive(repo_url, repo_lang)
             lang = LangEnum.from_render(repo_lang)
 
             ctx = EvaContext(

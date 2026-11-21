@@ -11,6 +11,41 @@ from utils import LangEnum
 from .doc import ApiDoc, ClazzDoc, ModuleDoc, Doc, RepoDoc
 
 
+# Directories and file suffixes that identify test-only or benchmark-only code.
+_TEST_DIR_NAMES = {
+    'test', 'tests', '__tests__', 'spec', 'specs', '__specs__',
+    'benchmark', 'benchmarks', '__benchmarks__', 'fixtures', '__fixtures__',
+    'e2e', 'mocks', '__mocks__', 'node_modules',
+    # HarmonyOS / ArkTS and other common test-only directory names.
+    'ohostest', 'ohos_test', 'unittest', 'unittests', 'androidtest',
+    'uitest', 'integrationtest', 'integrationtests', 'testdata', 'test-data',
+    '__snapshots__', 'snapshots',
+}
+_TEST_FILE_RE = re.compile(r'(^|[._-])(test|tests|spec|specs|benchmark|benchmarks|e2e)([._-]|$)', re.IGNORECASE)
+
+
+def is_test_path(filename: str) -> bool:
+    """Return True for test, benchmark, fixture, or vendored source paths.
+
+    Parsers use the same predicate so that test helpers cannot leak into the
+    public API, module partition, or repository summary for only some
+    languages.
+    """
+    if not filename:
+        return False
+    normalized = str(filename).replace('\\', '/')
+    parts = [part for part in normalized.split('/') if part]
+    if not parts:
+        return False
+    if any(part.lower() in _TEST_DIR_NAMES for part in parts[:-1]):
+        return True
+    name = parts[-1]
+    stem = name.rsplit('.', 1)[0] if '.' in name else name
+    if _TEST_FILE_RE.search(name) or _TEST_FILE_RE.search(stem):
+        return True
+    return bool(re.match(r'^(test_|tests_|benchmark_)', name, re.IGNORECASE))
+
+
 # 变量定义
 @dataclass
 class FieldDef:

@@ -11,7 +11,7 @@ from loguru import logger
 
 from utils import remove_cycle
 from . import ClazzDef
-from .metric import Metric, EvaContext, FuncDef, FieldDef
+from .metric import Metric, EvaContext, FuncDef, FieldDef, is_test_path
 
 
 # 使用ctags和joern工具解析C/C++代码
@@ -60,8 +60,7 @@ class CParser(Metric):
                 name = content['name']
                 signature = content['signature']
                 filename = content['filename']
-                parts = re.split(r'[/\\\\]', filename.lower())
-                if any(part in {'test', 'tests', 'benchmark', 'benchmarks', 'node_modules'} for part in parts):
+                if is_test_path(filename):
                     continue
                 access = cls._get_access(content['modifier'])
                 beginLine = content['beginLine']
@@ -114,6 +113,8 @@ class CParser(Metric):
                 name = content['name']
                 signature = content['fullname']
                 filename = content['filename']
+                if is_test_path(filename):
+                    continue
                 fields = list(
                     map(lambda x: FieldDef(name=x['name'], signature=x['type'], access=cls._get_access(x['modifier'])),
                         content['attributes']))

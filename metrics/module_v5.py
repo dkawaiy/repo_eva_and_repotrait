@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import List
 
 import numpy as np
@@ -8,7 +9,7 @@ from utils import SimpleLLM, prefix_with, ChatCompletionSettings, SimpleRAG, Rag
     ProjectSettings,reformat_markdown_headers
 from .doc import ModuleDoc
 from .metric import EvaContext
-from .module import ModuleMetric, number_to_api
+from .module import ModuleMetric, number_to_api, module_sort_key, unique_module_names
 
 modules_prompt = '''
 You are an expert in software architecture analysis. 
@@ -36,7 +37,11 @@ Please Note:
 - #### Functions is a list of function signatures included in this module. Please output the exact function signature as provided in the context.
 - The Level 4 headings in the format like `#### Description` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format.
 - Don't add divider lines like `---` between multiple modules.
-- Assign each provided function to exactly one module and never repeat a function across modules.
+- Assign each provided function to exactly one module and never repeat a function across modules. Every provided function must appear in exactly one module.
+- Keep all methods of the same class or type in the same module; do not split a class across modules.
+- Give every module a unique and specific name. Do not reuse a generic name such as "Utility Module" for unrelated groups.
+- Do not invent calls, data flow, dependencies, or interactions between functions. Only describe relationships that are explicit in the function documentation.
+- Test helpers and benchmark harnesses are not library features; do not create a module for them.
 - Keep each description concise and stop after the final function list.
 '''
 
@@ -69,8 +74,142 @@ Please Note:
 - The Level 4 headings in the format like `#### Description` are fixed, don't change or translate them. Don't add new Level 3 or Level 4 headings. Do not write anything outside the format.
 - Don't omit any modules related to the software's core functionalities. If they cannot be merged, keep them.
 - Don't add divider lines like `---` between multiple modules.
+- Keep all methods of the same class or type in the same module; do not split a class across modules.
+- Give every merged module a unique and specific name; do not leave duplicate generic names.
+- Do not invent calls, data flow, dependencies, or interactions between functions.
+- Test helpers and benchmark harnesses are not library features; do not create a module for them.
 
 '''
+
+
+def _dedupe_functions(functions: List[str]) -> List[str]:
+    seen = set()
+    result = []
+    for api in functions or []:
+        if api and api not in seen:
+            seen.add(api)
+            result.append(api)
+    return result
+
+
+def _coalesce_same_name(docs: List[ModuleDoc]) -> List[ModuleDoc]:
+    """Merge modules that the LLM gave the same display name."""
+    merged: List[ModuleDoc] = []
+    by_name = {}
+    for doc in docs:
+        doc.functions = _dedupe_functions(doc.functions)
+        if not doc.functions:
+            continue
+        if doc.name not in by_name:
+            by_name[doc.name] = doc
+            merged.append(doc)
+            continue
+        target = by_name[doc.name]
+        for api in doc.functions:
+            if api not in target.functions:
+                target.functions.append(api)
+        description = (doc.description or '').strip()
+        if description and description not in (target.description or ''):
+            target.description = ((target.description or '').strip() + '\n\n' + description).strip()
+    return merged
+
+
+def _class_member_groups(ctx: EvaContext, api_set: set) -> List[List[str]]:
+    groups: List[List[str]] = []
+    if getattr(ctx, 'clazz_callgraph', None) is not None:
+        try:
+            for clazz in ctx.clazz_iter():
+                # Parser class graphs can contain bogus ownership (e.g. an
+                # interface whose functions list borrows methods from other
+                # classes).  Only trust members that are actually prefixed by
+                # this class signature, otherwise overlapping groups would
+                # move a method back out of its real class module.
+                prefixes = (clazz.signature + '.', clazz.signature + '::')
+                members = [f.signature for f in (clazz.functions or [])
+                           if f.signature in api_set and f.signature.startswith(prefixes)]
+                if len(members) >= 2:
+                    groups.append(members)
+        except Exception as e:
+            logger.warning(f'[ModuleV5Metric] class grouping failed, fallback to names: {e}')
+    if groups:
+        return groups
+
+    # Fallback for parsers that do not populate the class graph: group
+    # Owner.method / Owner::method / Owner.prototype.method by owner name.
+    buckets = {}
+    for api in api_set:
+        func = None
+        try:
+            func = ctx.func(api)
+        except Exception:
+            func = None
+        name = (getattr(func, 'name', None) or api).strip()
+        owner = ''
+        if '::' in name:
+            owner = name.rsplit('::', 1)[0]
+        elif '.' in name:
+            owner = name.rsplit('.', 1)[0]
+        owner = owner.replace('.prototype', '').strip()
+        if not owner or owner.lower() in {'module', 'exports', 'window', 'global', 'self'}:
+            continue
+        if not owner[:1].isupper():
+            continue
+        buckets.setdefault(owner, []).append(api)
+    return [members for members in buckets.values() if len(members) >= 2]
+
+
+def postprocess_module_docs(ctx: EvaContext, docs: List[ModuleDoc]) -> List[ModuleDoc]:
+    """Make module output deterministic and keep class methods together.
+
+    Steps: drop empty modules, fill missing names, merge duplicate names,
+    aggregate all methods of one class into the module that already owns most
+    of them, then deduplicate names and sort.
+    """
+    docs = [doc for doc in (docs or []) if doc and (doc.functions or [])]
+    for index, doc in enumerate(docs, start=1):
+        doc.name = (doc.name or '').strip() or f'未命名模块{index}'
+        doc.functions = _dedupe_functions(doc.functions)
+
+    # Do not merge same-name modules here: each cluster is named by an
+    # independent LLM call, so unrelated clusters often pick the same generic
+    # name.  Duplicate names are made unique later; merging them would collapse
+    # semantically different clusters into one module.
+    api_to_doc = {}
+    for doc in docs:
+        for api in doc.functions:
+            api_to_doc[api] = doc
+
+    api_set = set(api_to_doc)
+    for members in _class_member_groups(ctx, api_set):
+        members = [api for api in dict.fromkeys(members) if api in api_to_doc]
+        if len(members) < 2:
+            continue
+        owners = {id(api_to_doc[api]) for api in members}
+        if len(owners) <= 1:
+            continue
+        candidates = [doc for doc in docs if any(api in doc.functions for api in members)]
+        if not candidates:
+            continue
+        target = min(
+            candidates,
+            key=lambda doc: (-sum(1 for api in members if api in doc.functions),
+                             doc.name, module_sort_key(doc)),
+        )
+        for api in members:
+            current = api_to_doc[api]
+            if current is target:
+                continue
+            current.functions = [item for item in current.functions if item != api]
+            if api not in target.functions:
+                target.functions.append(api)
+            api_to_doc[api] = target
+
+    docs = [doc for doc in docs if doc.functions]
+    unique_module_names(docs)
+    docs.sort(key=module_sort_key)
+    for doc in docs:
+        doc.functions = _dedupe_functions(doc.functions)
+    return docs
 
 
 def partition_module_docs(docs: List[ModuleDoc], local_apis: List[str]) -> List[ModuleDoc]:
@@ -123,9 +262,11 @@ class ModuleV5Metric(ModuleMetric):
                 return
             # 使用聚类算法初步划分模块，并由大模型总结模块文档
             drafts = self._draft_v5(ctx)
+            drafts = postprocess_module_docs(ctx, drafts)
             # 通过草稿文档 embedding 聚类合并模块，并可选使用 LLM 重命名
             if merge_op:
                 drafts = self.merge(ctx, drafts, merge_with_llm=merge_with_llm)
+                drafts = postprocess_module_docs(ctx, drafts)
             # 由大模型增强模块文档
             self._enhance(ctx, drafts)
         except AssertionError as e:
@@ -254,9 +395,12 @@ class ModuleV5Metric(ModuleMetric):
         
         logger.info(f'[ModuleV5Metric] Clustered into {len(cluster)} groups')
 
-        def gen(g: List[int]):
+        draft_docs: List[ModuleDoc] = []
+        draft_lock = threading.Lock()
+
+        def gen(group_index: int, g: List[int]):
             local_apis = list(map(lambda x: apis[x], g))  # 获取当前组的API
-            
+            docs = None
             try:
                 # 使用函数描述组织上下文
                 # 不再使用编号，直接使用函数签名
@@ -272,7 +416,6 @@ class ModuleV5Metric(ModuleMetric):
                 )
                 
                 # 尝试解析LLM响应
-                docs = None
                 try:
                     docs = ModuleDoc.from_doc(res)
                 except Exception as e:
@@ -291,39 +434,74 @@ class ModuleV5Metric(ModuleMetric):
                             f'API group size: {len(local_apis)}\n'
                             f'LLM response preview:\n{res[:500]}...'
                         )
-                        return  # 跳过这个组
-                
-                
-                # Keep the partition returned by the model.  The previous
-                # implementation assigned every API in the cluster to every
-                # returned module, multiplying prompt size and producing many
-                # near-identical enhancement requests.
-                valid_docs = partition_module_docs(docs, local_apis)
-
-                for doc in valid_docs:
-                    try:
-                        # 保存模块文档
-                        ctx.save_doc(cls.get_v5_draft_filename(ctx), doc)
-                        logger.info(
-                            f'[ModuleV5Metric] Generated draft for module "{doc.name}" '
-                            f'with {len(doc.functions)} functions'
-                        )
-                        
-                    except Exception as e:
-                        logger.error(
-                            f'[ModuleV5Metric] Failed to process module "{doc.name}": {e}',
-                            exc_info=True
-                        )
-                        
+                        docs = None
             except Exception as e:
                 logger.error(
                     f'[Module5Metric] Failed to generate module for API group (size={len(local_apis)}): {e}',
                     exc_info=True
                 )
+                docs = None
+
+            if not docs:
+                docs = [ModuleDoc(name=f'模块{group_index + 1}', description='', functions=list(local_apis))]
+
+            # One cluster is one semantic group.  Merge any modules the model
+            # split out of it, so module count is driven by the deterministic
+            # clustering instead of by LLM sampling.
+            try:
+                valid_docs = partition_module_docs(docs, local_apis)
+            except Exception as e:
+                logger.warning(f'[ModuleV5Metric] partition failed for group {group_index}: {e}')
+                valid_docs = []
+            if not valid_docs:
+                valid_docs = [ModuleDoc(name=f'模块{group_index + 1}', description='',
+                                        functions=list(local_apis))]
+
+            functions = []
+            for doc in valid_docs:
+                for api in (doc.functions or []):
+                    if api not in functions:
+                        functions.append(api)
+            for api in local_apis:
+                if api not in functions:
+                    functions.append(api)
+
+            descriptions = []
+            for doc in valid_docs:
+                desc = (doc.description or '').strip()
+                if desc and not desc.startswith('[') and desc not in descriptions:
+                    descriptions.append(desc)
+            rep = max(valid_docs, key=lambda doc: len(doc.functions or []))
+            module = ModuleDoc(
+                name=(rep.name or '').strip() or f'模块{group_index + 1}',
+                description='\n\n'.join(descriptions),
+                functions=functions,
+            )
+            with draft_lock:
+                draft_docs.append(module)
+            logger.info(
+                f'[ModuleV5Metric] Generated one draft module for cluster {group_index + 1} '
+                f'with {len(functions)} functions: {module.name}'
+            )
 
         TaskDispatcher(ProjectSettings.llm_thread_pool).adds(
-            list(map(lambda args: Task(f=gen, args=(args,)), cluster))).run()
-        return ctx.load_docs(cls.get_v5_draft_filename(ctx), ModuleDoc)
+            list(map(lambda args: Task(f=gen, args=args), enumerate(cluster)))).run()
+
+        if not draft_docs:
+            logger.error('[ModuleV5Metric] no module draft generated')
+            return []
+
+        # Deterministic persistence: sort once, then append in order.  The old
+        # implementation appended from parallel workers, so modules.md order
+        # changed from run to run even when the content was identical.
+        draft_docs = postprocess_module_docs(ctx, draft_docs)
+        draft_path = cls.get_v5_draft_filename(ctx)
+        if os.path.exists(draft_path):
+            os.remove(draft_path)
+        for doc in draft_docs:
+            ctx.save_doc(draft_path, doc)
+        logger.info(f'[ModuleV5Metric] saved {len(draft_docs)} draft module docs in stable order')
+        return draft_docs
 
 
 
@@ -399,6 +577,9 @@ Rules:
 - Keep heading names exactly as shown.
 - Do not add extra headings or separators.
 - Keep language consistent with input.
+- Keep all methods of the same class or type in this module.
+- Give the module a unique and specific name; do not reuse a generic name.
+- Do not invent calls, data flow, dependencies, or interactions between functions.
 
 Drafts:
 {cluster_doc}
@@ -418,5 +599,6 @@ Drafts:
             doc = ModuleDoc(name=name, description=description, functions=funcs)
             merged_docs.append(doc)
 
+        merged_docs = postprocess_module_docs(ctx, merged_docs)
         logger.info(f'[ModuleV5Metric] merge modules: {len(drafts)} -> {len(merged_docs)}')
         return merged_docs
