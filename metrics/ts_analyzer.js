@@ -176,6 +176,10 @@ function main() {
                     extractEnumInfo(node, relPath, content, structs);
                 } else if (ts.isFunctionDeclaration(node) && node.name) {
                     extractFunctionInfo(node, relPath, content, methods);
+                } else if (ts.isVariableStatement(node)) {
+                    extractVariableFunctions(node, relPath, content, methods);
+                } else if (ts.isModuleDeclaration(node)) {
+                    extractNamespaceFunctions(node, relPath, content, methods);
                 }
             });
 
@@ -228,8 +232,18 @@ function extractClassInfo(classNode, filePath, content, structs, methods) {
 
     const classMethods = [];
     classNode.members.forEach(member => {
-        if (ts.isMethodDeclaration(member) && member.name) {
+        if ((ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member) ||
+             ts.isSetAccessorDeclaration(member)) && member.name) {
             const methodInfo = extractFunctionInfo(member, filePath, content, methods, className);
+            if (methodInfo) classMethods.push(methodInfo.signature);
+        } else if (ts.isConstructorDeclaration(member)) {
+            const methodInfo = extractFunctionInfo(member, filePath, content, methods,
+                                                   className, 'constructor');
+            if (methodInfo) classMethods.push(methodInfo.signature);
+        } else if (ts.isPropertyDeclaration(member) && member.name && member.initializer &&
+                   (ts.isArrowFunction(member.initializer) || ts.isFunctionExpression(member.initializer))) {
+            const methodInfo = extractFunctionInfo(member.initializer, filePath, content, methods,
+                                                   className, member.name.getText(), member);
             if (methodInfo) classMethods.push(methodInfo.signature);
         }
     });
@@ -328,10 +342,54 @@ function extractEnumInfo(node, filePath, content, structs) {
     });
 }
 
-// 提取函数信息（完全不变）
-function extractFunctionInfo(funcNode, filePath, content, methods, className = '') {
+function extractNamespaceFunctions(node, filePath, content, methods, parent = '') {
+    const scope = parent ? `${parent}.${node.name.getText()}` : node.name.getText();
+    if (!node.body) return;
+    if (ts.isModuleDeclaration(node.body)) {
+        extractNamespaceFunctions(node.body, filePath, content, methods, scope);
+    } else if (ts.isModuleBlock(node.body)) {
+        for (const statement of node.body.statements) {
+            if (ts.isFunctionDeclaration(statement) && statement.name) {
+                extractFunctionInfo(statement, filePath, content, methods, scope);
+            } else if (ts.isVariableStatement(statement)) {
+                extractVariableFunctions(statement, filePath, content, methods, scope);
+            } else if (ts.isModuleDeclaration(statement)) {
+                extractNamespaceFunctions(statement, filePath, content, methods, scope);
+            }
+        }
+    }
+}
+
+function extractVariableFunctions(statement, filePath, content, methods, namespaceName = '') {
+    const exported = statement.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword) || false;
+    for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
+        const name = declaration.name.text;
+        const value = declaration.initializer;
+        if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+            extractFunctionInfo(value, filePath, content, methods, namespaceName,
+                                name, declaration, exported);
+        } else if (ts.isObjectLiteralExpression(value)) {
+            const scope = namespaceName ? `${namespaceName}.${name}` : name;
+            for (const property of value.properties) {
+                if (ts.isMethodDeclaration(property) && property.name) {
+                    extractFunctionInfo(property, filePath, content, methods, scope,
+                                        '', null, exported);
+                } else if (ts.isPropertyAssignment(property) && property.name &&
+                           (ts.isArrowFunction(property.initializer) || ts.isFunctionExpression(property.initializer))) {
+                    extractFunctionInfo(property.initializer, filePath, content, methods, scope,
+                                        property.name.getText(), property, exported);
+                }
+            }
+        }
+    }
+}
+
+// 提取函数信息
+function extractFunctionInfo(funcNode, filePath, content, methods, className = '',
+                             explicitName = '', codeNode = null, exported = false) {
     try {
-        const funcName = funcNode.name?.getText();
+        const funcName = explicitName || funcNode.name?.getText();
         if (!funcName) return null;
 
         const funcSignature = className 
@@ -351,9 +409,10 @@ function extractFunctionInfo(funcNode, filePath, content, methods, className = '
             });
         }
 
+        const sourceNode = codeNode || funcNode;
         const funcCode = content.substring(
-            funcNode.getStart(),
-            funcNode.getEnd()
+            sourceNode.getStart(),
+            sourceNode.getEnd()
         );
 
         const callees = [];
@@ -372,17 +431,18 @@ function extractFunctionInfo(funcNode, filePath, content, methods, className = '
             }
         });
 
-        const isExported = funcNode.modifiers?.some(m => 
+        const metadataNode = codeNode || funcNode;
+        const isExported = exported || metadataNode.modifiers?.some(m =>
             m.kind === ts.SyntaxKind.ExportKeyword
-        );
+        ) || false;
 
         const funcInfo = {
             signature: funcSignature,
             name: funcName,
             code: funcCode,
             filename: filePath,
-            modifier: getAccessModifier(funcNode),
-            isStatic: funcNode.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword) || false,
+            modifier: getAccessModifier(metadataNode),
+            isStatic: metadataNode.modifiers?.some(m => m.kind === ts.SyntaxKind.StaticKeyword) || false,
             isExported: isExported,
             params,
             callees

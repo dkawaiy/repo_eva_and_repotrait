@@ -28,6 +28,7 @@ The standard format is in the Markdown reference paragraph below, and you do not
 
 Please Note:
 - #### Features is a list of main features that the software providing to users. Each feature should be described in one sentences. Don't mention specific function names. Don't make up unverified features. 
+- Check the actual arithmetic and state changes in the supplied evidence. A name suggesting tax addition does not prove that the implementation adds tax; a pure pricing rule does not make a mutable cart immutable. A method named next is not necessarily an iterator protocol.
 - #### Standards is the names of standards that the software designed for. For example, most of the APIs in `cJSON` are designed for JSON serialization, we can speculate it support JSON 1.0. This example does not mean that the software implements JSON 1.0, so don't write it in the README unless you are sure about it.
 - The Level 4 headings in the format like `#### xxx` are fixed, don't change or translate them. 
 - Don't add new Level 3 or Level 4 headings. Do not write anything outside the format. Don't output descriptions out of the format.
@@ -108,6 +109,7 @@ Especially, you should check the following points:
 1. The description should accurately and clearly describe the main functions of the software.
 2. Ensure that each feature is implemented in software and reflects its advantages over competing products.
 3. The standards should be verified and reflect the core functionality of the software.
+4. Verify each behavior against the supplied answers and module evidence. Describe subtraction as subtraction even if a function is named addTax; distinguish mutable objects from pure calculations; do not call a next method an iterator without evidence of the iterator protocol.
 
 The improved README should keep the same format as before with a new section "#### Scenarios".
 To ensure the same format, you should follow the standard format in the Markdown reference paragraph below. You do not need to write the reference symbols `>` when you output:

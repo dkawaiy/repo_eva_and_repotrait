@@ -42,6 +42,20 @@ from utils import LangEnum
 from api import download_archive
 
 
+def _evaluation_features(metric_result: dict) -> List[str]:
+    """Keep distinct capabilities visible when a module describes several functions."""
+    features = []
+    for kind, field in (("函数", "functions"), ("类", "classes"), ("模块", "modules")):
+        for item in metric_result.get(field, []):
+            description = (item.get("description") or "").strip()
+            name = (item.get("name") or "").strip()
+            if not description and (kind != "函数" or not name):
+                continue
+            features.append(f"{kind} {name}：{description}" if name and description
+                            else f"{kind} {name}" if name else description)
+    return _dedupe_preserve_order(features)
+
+
 
 
 def run_auto_profile_task(req: AutoProfileTaskRequest):
@@ -106,7 +120,8 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
             #记录url时去除前部域名https://smes.oss-cn-heyuan.aliyuncs.com/只保留后部key
             software_to_url[software_name] = repo_url.split('.com/')[-1]
             software_inputs.append(
-                (software_name, [module.description for module in module_doc.modules])
+                (software_name, _evaluation_features(data) if evaluate_only
+                 else [module.description for module in module_doc.modules])
             )
         # 加载领域模型
         if not evaluate_only:

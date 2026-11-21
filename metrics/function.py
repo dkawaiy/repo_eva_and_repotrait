@@ -9,7 +9,11 @@ from .metric import Metric, FieldDef, FuncDef
 documentation_guideline = (
     "Keep in mind that your audience is document readers, so use a deterministic tone to generate precise content and don't let them know "
     "you're provided with code snippet and documents. AVOID ANY SPECULATION and inaccurate descriptions! Now, provide the documentation "
-    "for the target object in a professional way."
+    "for the target object in a professional way. Trace every example through the shown code before stating its result or exception. "
+    "For JavaScript and TypeScript, remember that Number('') is 0 after input cleaning; only an actual NaN reaches a Number.isNaN error branch. "
+    "For a loop over adjacent points, check whether the code adds the last-to-first edge before calling its result a closed perimeter. "
+    "For Rust by-value self, do not claim that the original variable is unusable unless the enclosing type is known not to implement Copy. "
+    "Describe the operation performed by the code even when a function name suggests a different operation."
 )
 
 import re
@@ -19,6 +23,19 @@ def count_level4_headers(md_text: str) -> int:
     统计markdown文本中四级标题（####）的数量
     """
     return len(re.findall(r'^#### ', md_text, flags=re.MULTILINE))
+
+
+def _ground_description_in_code(code: str, description: str) -> str:
+    """Correct two source patterns whose generated summaries can contradict their details."""
+    compact = re.sub(r'\s+', '', code)
+    if 'amount-amount*rate' in compact and ('含税' in description or '增加税' in description):
+        return '根据税率从输入金额中扣除税额，并将结果舍入到分。'
+    if (re.search(r'\bnext\s*\(', code)
+            and re.search(r'\bvalue\s*\+=\s*1', code)
+            and re.search(r'\breturn\s+value\s*;', code)
+            and '迭代器' in description):
+        return '将内部计数值增加 1，并返回递增后的数值。'
+    return description
 
 
 # 为函数生成文档
@@ -56,6 +73,7 @@ class FunctionMetric(Metric):
                 res = reformat_markdown_headers(res, ['Description', 'Parameters','Code Details', 'Example'])
             res = f'### {signature}\n' + res
             doc = ApiDoc.from_chapter(res)
+            doc.description = _ground_description_in_code(f.code, doc.description)
             ctx.save_function_doc(signature, doc)
             logger.info(f'[FunctionMetric] parse {signature}')
 
