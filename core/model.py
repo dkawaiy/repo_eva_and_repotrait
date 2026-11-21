@@ -119,6 +119,7 @@ class SoftwareProfile(BaseModel):
     mapped_features: List[FeatureMapping] = Field([], description="成功映射到领域模型的功能列表")
     unmapped_features: List[str] = Field([], description="未能映射到领域模型的原始功能描述列表（演化的种子）")
     coverage_score: float = Field(0.0, description="本次画像对领域模型中已有功能的覆盖率")
+    input_fingerprint: Optional[str] = Field(None, description="画像输入指纹，用于同输入重跑时复用结果")
 
     def to_dict(self) -> Dict[str, Any]:
         """将模型递归转换为字典"""

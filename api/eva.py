@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 import requests
@@ -9,11 +10,56 @@ from loguru import logger
 
 from metrics import EvaContext, CParser, FunctionMetric, ClazzMetric, ModuleMetric, RepoV2Metric, JSlangParser, \
     ModuleV2Metric,arktsParser, RustParser, RustFunctionMetric, RustClazzMetric, TSAnalyzer,ModuleV5Metric
+from metrics.metric import is_test_path
 from utils import LangEnum, post, resolve_archive
 from .vo import EvaResult, RAResult, RAStatus, RATask
 
 
+_TS_IMPL_SUFFIXES = ('.ts', '.tsx')
+_JS_IMPL_SUFFIXES = ('.js', '.jsx', '.mjs', '.cjs')
+_LANG_SCAN_SKIP_DIRS = {'node_modules', '.git'}
+
+
+def resolve_effective_lang(resource_path: str, lang: LangEnum) -> LangEnum:
+    """按实际实现文件修正语言，避免把仅有 .d.ts 的 JS 仓库当 TypeScript 解析。
+
+    有些 npm 包在 package.json 中声明 types: index.d.ts，但实现是 index.js；
+    请求方却按 TypeScript 提交。TSAnalyzer 只收集 .ts/.tsx/.d.ts，会把声明文件
+    当成函数，既看不到实现，也识别不了箭头函数。这里仅在没有非声明 TS 实现、
+    但存在 JS 实现时回退到 JavaScript 解析。测试/基准目录不计入判定。
+    """
+    if lang != LangEnum.typescript:
+        return lang
+    has_ts_impl = False
+    has_js_impl = False
+    for root, dirs, files in os.walk(resource_path):
+        dirs[:] = [item for item in dirs if item not in _LANG_SCAN_SKIP_DIRS]
+        for name in files:
+            lower = name.lower()
+            if lower.endswith('.d.ts'):
+                continue
+            # 构建/格式化工具的 .ts 配置不是库实现，不能据此判定仓库是 TypeScript。
+            if re.search(r'\.config\.(ts|tsx)$', lower):
+                continue
+            rel_path = os.path.relpath(os.path.join(root, name), resource_path)
+            if is_test_path(rel_path):
+                continue
+            if lower.endswith(_TS_IMPL_SUFFIXES):
+                has_ts_impl = True
+            elif lower.endswith(_JS_IMPL_SUFFIXES):
+                has_js_impl = True
+    if has_js_impl and not has_ts_impl:
+        logger.warning(
+            f"[lang] {resource_path} 只有 JS 实现（或仅 .d.ts 声明），"
+            f"TypeScript 解析回退为 JavaScript"
+        )
+        return LangEnum.javascript
+    return lang
+
+
 def eva(ctx: EvaContext, lang: LangEnum):
+    lang = resolve_effective_lang(ctx.resource_path, lang)
+    ctx.lang = lang
     # 预处理，生成函数调用图、类调用图
     if lang == LangEnum.cpp:
         CParser().eva(ctx)
@@ -51,6 +97,8 @@ def eva(ctx: EvaContext, lang: LangEnum):
     mark_docs_complete(ctx)
 
 def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
+    lang = resolve_effective_lang(ctx.resource_path, lang)
+    ctx.lang = lang
     # 预处理，生成函数调用图、类调用图
     if lang == LangEnum.cpp:
         CParser().eva(ctx)
@@ -194,7 +242,7 @@ def eva_with_response(req: RATask):
 
 
 # 文档缓存版本：模块/仓库文档生成逻辑变化时递增，避免复用旧口径的文档。
-_DOC_CACHE_VERSION = 'issue29-docs-v4'
+_DOC_CACHE_VERSION = 'issue32-40-docs-v5'
 
 
 def _archive_cache_key(content: bytes, lang: str = '') -> str:

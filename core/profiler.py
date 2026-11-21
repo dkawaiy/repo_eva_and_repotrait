@@ -8,6 +8,7 @@ core/profiler.py
 一条原始功能（例如一个模块描述）可能同时实现多个标准功能，因此每条决策
 使用 matches 列表表达多对多关系；旧版的单值 standard_id 仍兼容。
 """
+import hashlib
 import json
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Dict, List, Optional
@@ -22,6 +23,9 @@ from pathlib import Path
 
 # 低于该置信度的匹配不计入画像，原始功能改记为未映射。
 CONFIDENCE_THRESHOLD = 0.8
+
+# 画像输入指纹的版本；解析逻辑或提示词变化时递增，避免复用旧口径结果。
+PROFILE_INPUT_CACHE_VERSION = 'issue37-profile-v1'
 
 
 # --- 核心类 ---
@@ -174,6 +178,22 @@ class Profiler:
         self.model = domain_model
         # 领域模型画像输出较长，不限制端到端 deadline
 
+    def _input_fingerprint(self, normalized_raw_features: List[str]) -> str:
+        """计算领域模型 + 原始功能 + 提示词的稳定指纹。
+
+        覆盖率完全由这组输入决定；同一输入重跑必须复用同一结果，避免
+        LLM 采样让同一仓库同一模型的得分漂移。
+        """
+        payload = {
+            "cache_version": PROFILE_INPUT_CACHE_VERSION,
+            "domain_model": self.model.model_dump(mode="json", exclude_none=True),
+            "raw_features": normalized_raw_features,
+            "confidence_threshold": CONFIDENCE_THRESHOLD,
+            "system_prompt": profiler_prompts.SYSTEM_PROMPT,
+        }
+        encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
     def profile(self, software_name: str, raw_features: List[str], flag = 0) -> SoftwareProfile:
         """
         对一个新软件执行画像操作。
@@ -184,19 +204,34 @@ class Profiler:
         :param raw_features: 从文档中提取的原始功能描述列表。
         :return: 一个包含映射结果和未映射功能的画像结果对象。
         """
-        #先看下对应路径下是否已存在profile文件，存在则直接加载返回
         profile_path = Path(f"profiles/{self.model.name}/{software_name}_profile.json")
-        if profile_path.exists() and flag == 0:
-            logger.info(f"Profile for software '{software_name}' already exists at {profile_path}. Loading existing profile.")
+        normalized_raw_features = [f.strip() for f in raw_features if isinstance(f, str) and f.strip()]
+        input_fingerprint = self._input_fingerprint(normalized_raw_features)
+
+        # 已有画像：普通调用直接复用；强制刷新时只有输入完全一致才复用。
+        # 旧画像没有 input_fingerprint，强制刷新会重算一次并补上指纹。
+        if profile_path.exists():
             with open(profile_path, 'r', encoding='utf-8') as f:
                 profile_data = json.load(f)
-            # 移除 profile_data 中的 software_name，以避免重复传递
-            profile_data.pop('software_name', None)
-            return SoftwareProfile(software_name=software_name, **profile_data)
-        
-        logger.info(f"Starting to profile software: '{software_name}'...")
+            stored_fingerprint = profile_data.get('input_fingerprint')
+            if flag == 0 or stored_fingerprint == input_fingerprint:
+                logger.info(
+                    f"Profile for software '{software_name}' already exists at {profile_path}. "
+                    f"Loading existing profile (fingerprint_match={stored_fingerprint == input_fingerprint})."
+                )
+                # 移除 profile_data 中的 software_name，以避免重复传递
+                profile_data.pop('software_name', None)
+                profile = SoftwareProfile(software_name=software_name, **profile_data)
+                if stored_fingerprint is None:
+                    profile.input_fingerprint = input_fingerprint
+                return profile
+            logger.info(
+                f"Profile for '{software_name}' exists but input changed; "
+                f"stored_fingerprint={stored_fingerprint or 'legacy'}, "
+                f"current_fingerprint={input_fingerprint}"
+            )
 
-        normalized_raw_features = [f.strip() for f in raw_features if isinstance(f, str) and f.strip()]
+        logger.info(f"Starting to profile software: '{software_name}'...")
 
         # 领域模型为空时不走 LLM：直接将原始功能作为未映射功能，供后续演化使用。
         if not self.model.features:
@@ -206,6 +241,7 @@ class Profiler:
                 mapped_features=[],
                 unmapped_features=normalized_raw_features,
                 coverage_score=0.0,
+                input_fingerprint=input_fingerprint,
             )
             profile.save_profile(profile_path)
             logger.info(
@@ -266,7 +302,8 @@ class Profiler:
                     f"{len(normalized_raw_features)} raw features)"
                 )
 
-        # 保存画像文件
+        # 保存画像文件；指纹随结果落盘，供同输入重跑复用。
+        profile.input_fingerprint = input_fingerprint
         profile_path = Path(f"profiles/{self.model.name}/{software_name}_profile.json")
         profile.save_profile(profile_path)
         logger.success(f"Profiling for '{software_name}' completed and saved to {profile_path}")
