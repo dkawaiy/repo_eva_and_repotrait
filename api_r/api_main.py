@@ -219,6 +219,43 @@ def _failed_result(req: AutoProfileTaskRequest, error: Exception, metric_results
     )
 
 
+def _read_only_model_if_available(
+    req: AutoProfileTaskRequest,
+    domain_model: DomainModel,
+) -> Optional[DomainModel]:
+    """Return a deep-copied snapshot for a task that cannot mutate the model.
+
+    Returning None means the request may mutate/bootstrap the model and must keep
+    the full write lock. For an omitted feature list, only loading the persisted
+    model happens under the lock; profiling runs after the lock is released.
+    """
+    if req.mode == "evolve":
+        return None
+    if req.mode not in (None, "evaluate"):
+        return None
+
+    if domain_model.features:
+        # Request already carries a complete standard; no shared model state is read.
+        return domain_model.model_copy(deep=True)
+
+    if req.mode == "evaluate":
+        # Keep the existing structured error for an empty explicit standard.
+        return None
+
+    # mode=None with omitted features: resolve the same-name persisted model under
+    # a short lock, copy it, then release the lock before download/metrics/profile.
+    with _model_lock(domain_model.name):
+        persisted = _load_persisted_model(domain_model.name)
+        if persisted is None:
+            return None
+        snapshot = persisted.model_copy(deep=True)
+    logger.warning(
+        "[Service] request omitted domain model features; "
+        f"using persisted model {domain_model.name!r} v{snapshot.version}"
+    )
+    return snapshot
+
+
 def run_auto_profile_task(req: AutoProfileTaskRequest):
     """对外异步任务的核心实现：自动画像 → 如有未匹配则自动演化 → 重画像 → 返回最终模型。"""
     metric_results: dict[str, dict] = {}
@@ -228,14 +265,21 @@ def run_auto_profile_task(req: AutoProfileTaskRequest):
             if isinstance(req.domain_model, str)
             else DomainModel.model_validate(req.domain_model)
         )
+        read_only_model = _read_only_model_if_available(req, domain_model)
+        if read_only_model is not None:
+            logger.info(
+                "[Service] read-only task uses a domain model snapshot; "
+                "profiling runs outside the model lock"
+            )
+            return _execute_auto_profile_task(req, read_only_model, metric_results)
         with _model_lock(domain_model.name):
-            return _run_auto_profile_task_locked(req, domain_model, metric_results)
+            return _execute_auto_profile_task(req, domain_model, metric_results)
     except Exception as e:
         logger.exception("Auto profile task failed")
         return _failed_result(req, e, metric_results)
 
 
-def _run_auto_profile_task_locked(
+def _execute_auto_profile_task(
     req: AutoProfileTaskRequest,
     domain_model: DomainModel,
     metric_results: dict[str, dict],

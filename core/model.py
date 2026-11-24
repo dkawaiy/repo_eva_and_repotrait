@@ -4,6 +4,7 @@ core/model.py
 定义项目核心的数据模型，包括领域功能模型、软件功能画像等。
 使用 Pydantic 进行数据建模和校验。
 """
+import os
 import uuid
 import json
 from pathlib import Path
@@ -127,12 +128,26 @@ class SoftwareProfile(BaseModel):
     
     def save_profile(self, file_path: Path) -> None:
         """
-        将当前软件画像保存到 JSON 文件。
+        将当前软件画像原子地保存到 JSON 文件。
+
+        多个 evaluate 任务可能同时画像同一个软件；先写同目录临时文件再
+        os.replace，保证读者看到的始终是完整 JSON，而不是被截断的半个文件。
         :param file_path: 保存文件的路径
         """
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(self.model_dump(), f, indent=4, ensure_ascii=False)
+        tmp_path = file_path.with_name(f".{file_path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with open(tmp_path, 'w', encoding='utf-8') as f:
+                json.dump(self.model_dump(), f, indent=4, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, file_path)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except OSError:
+                    pass
 
 class DomainModel(BaseModel):
     """

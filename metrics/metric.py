@@ -216,6 +216,25 @@ class EvaContext:
             "parameters": doc.parameters if func.params else "无",
         }
 
+    def _display_class_name(self, signature: str) -> str:
+        """Return a stable simple class name for display only."""
+        name = (signature or '').strip()
+        if not name:
+            return name
+        if self.lang == LangEnum.arkts:
+            first = name.split()[0]
+            first = first.rsplit('/', 1)[-1]
+            return re.sub(r'\.(?:ets|tsx?|jsx?)$', '', first, flags=re.IGNORECASE)
+        if self.lang == LangEnum.javascript:
+            if '::program:' in name:
+                name = name.rsplit('::program:', 1)[-1]
+            elif ':' in name:
+                name = name.rsplit(':', 1)[-1]
+            return name.rsplit('.', 1)[-1]
+        if self.lang in (LangEnum.rust, LangEnum.cpp) and '::' in name:
+            return name.rsplit('::', 1)[-1]
+        return name.rsplit('.', 1)[-1]
+
     def _display_function_name(self, func: FuncDef, original: str) -> str:
         """Show owner.method(arguments) without changing parser or callgraph keys."""
         name = original or func.signature
@@ -251,18 +270,32 @@ class EvaContext:
             return f'{qualified}({parameters})'
 
         if self.lang == LangEnum.rust:
-            if 'unknown' in name and func.code:
+            signature = func.signature or name
+            if 'unknown' in signature and func.code:
                 for param in func.params:
                     if param.signature != 'unknown':
                         continue
                     annotation = re.search(
                         rf'\b{re.escape(param.name)}\s*:\s*(impl\s+[A-Za-z_]\w*(?:<[^>]+>)?)', func.code)
                     if annotation:
-                        name = name.replace('unknown', annotation.group(1), 1)
-            match = re.search(r'(?:[A-Za-z_]\w*::)*' + re.escape(func.name) + r'\(.*\)$', name)
+                        signature = signature.replace('unknown', annotation.group(1), 1)
+            params = []
+            for param in func.params:
+                if param.name in ('self', '&self', '&mut self', 'mut self'):
+                    continue
+                value = param.signature or 'unknown'
+                if value == 'unknown' and func.code:
+                    annotation = re.search(
+                        rf'\b{re.escape(param.name)}\s*:\s*(impl\s+[A-Za-z_]\w*(?:<[^>]+>)?)', func.code)
+                    if annotation:
+                        value = annotation.group(1)
+                params.append(value)
+            match = re.search(r'([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)::([A-Za-z_]\w*)\s*\(', signature)
             if match:
-                name = match.group(0).replace('::', '.')
-            return re.sub(r'\((?:&(?:mut\s+)?)?self(?:,\s*)?', '(', name)
+                owner = match.group(1).rsplit('::', 1)[-1]
+                method = match.group(2)
+                return f'{owner}.{method}({", ".join(params)})'
+            return f'{func.name}({", ".join(params)})'
 
         if self.lang == LangEnum.typescript:
             qualified = func.signature.removeprefix(func.filename + '.')
@@ -309,8 +342,11 @@ class EvaContext:
         clazz_def: ClazzDef = self.clazz(signature)
         if clazz_def is None:
             return None
-        return self.load_doc(signature, os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md'),
-                             ClazzDoc)
+        doc = self.load_doc(signature, os.path.join(self.doc_path, f'{clazz_def.filename}.{ClazzDoc.doc_type()}.md'),
+                            ClazzDoc)
+        if doc is not None:
+            doc.name = self._display_class_name(clazz_def.signature)
+        return doc
 
     # 写入单个模块文档
     def save_module_doc(self, doc: ModuleDoc):

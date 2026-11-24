@@ -12,10 +12,14 @@ from loguru import logger
 from .file_helper import resolve_archive
 
 import re
-from typing import List
+from threading import Lock
+from typing import Dict, List
 from sentence_transformers import SentenceTransformer
 import numpy as np
-import re
+
+_EMBEDDING_MODEL_CACHE: Dict[str, SentenceTransformer] = {}
+_EMBEDDING_MODEL_CACHE_LOCK = Lock()
+_EMBEDDING_ENCODE_LOCK = Lock()
 
 
 def prefix_with(s: str, p: str) -> str:
@@ -150,12 +154,30 @@ def reformat_markdown_with_headers(md_text: str, headers: List[str]) -> str:
     return ''.join(result)
 
 
+def _get_embedding_model(model_name: str) -> SentenceTransformer:
+    """Load each embedding model once per process and share it across worker threads."""
+    model = _EMBEDDING_MODEL_CACHE.get(model_name)
+    if model is not None:
+        return model
+    with _EMBEDDING_MODEL_CACHE_LOCK:
+        model = _EMBEDDING_MODEL_CACHE.get(model_name)
+        if model is None:
+            started_at = time.monotonic()
+            model = SentenceTransformer(model_name)
+            _EMBEDDING_MODEL_CACHE[model_name] = model
+            logger.info(
+                f"[Embedding] loaded model {model_name!r} in "
+                f"{time.monotonic() - started_at:.2f}s; cached for reuse"
+            )
+        return model
+
+
 def embedding_replace_headers(md_text: str, target_headers: List[str], 
                             model_name: str = 'tomaarsen/static-retrieval-mrl-en-v1') -> str:
     """
     用embedding语义相似度将markdown中的四级标题替换为target_headers中的标题（按标题语义匹配）
     """
-    model = SentenceTransformer(model_name)
+    model = _get_embedding_model(model_name)
     
     #  1. 使用 split 分割文本，保留标题（用于后续替换）
     blocks = re.split(r'(#### .+?\n)', md_text)
@@ -174,8 +196,9 @@ def embedding_replace_headers(md_text: str, target_headers: List[str],
         return md_text
 
     #  2. 计算原始标题 和 目标标题 的 embedding
-    raw_embeds = model.encode(raw_header_texts)      # (N, 384)
-    target_embeds = model.encode(target_headers)     # (M, 384)
+    with _EMBEDDING_ENCODE_LOCK:
+        raw_embeds = model.encode(raw_header_texts, show_progress_bar=False)  # (N, 384)
+        target_embeds = model.encode(target_headers, show_progress_bar=False)  # (M, 384)
 
     used = set()  # 记录已匹配的原始标题索引（在 raw_header_texts 中的索引）
     

@@ -203,6 +203,8 @@ def eva_try(req: RATask,ctx:EvaContext,lang:LangEnum):
                               result=data.model_dump_json()).model_dump_json(
                  exclude_none=True, exclude_unset=True))
         return 0
+    # /tools/hcl 走 eva_try 而不是 eva()，这里也必须写完整标记，否则每次都会重建文档。
+    mark_docs_complete(ctx)
     return 1
 
 
